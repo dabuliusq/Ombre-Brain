@@ -8,6 +8,20 @@ A long-term emotional memory system for Claude. Tags memories using Russell's va
 > Gitea 备用地址（GitHub 访问有问题时用）：
 > **https://git.p0lar1s.uk/P0lar1s/Ombre_Brain**
 
+## 二次开发说明 / Fork Changes
+
+本仓库基于 [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) 做二次开发，保留原版的 MCP 记忆工具、Obsidian Markdown 存储、情绪坐标、遗忘曲线、脱水压缩、Dashboard 和基础向量检索能力。
+
+基于原版新增/强化的部分：
+
+- 【二次开发】**OpenAI-compatible Gateway**：新增 `/v1/chat/completions`、`/v1/models`、`/health`，普通聊天客户端也能走 Ombre 记忆注入链路。
+- 【二次开发】**自动记忆注入**：每轮请求由 Gateway 先召回 `Core Memory / Recent Context / Recalled Memory`，再拼入隐藏 system message 转发给上游模型。
+- 【二次开发】**Persona State Engine**：新增 `persona_state.db`，按全局人格、关系状态、会话心情和回复姿态维护当前状态，并通过 `X-Ombre-Session-Id` 让多个客户端窗口共享连续状态。
+- 【二次开发】**召回冷却与短期去重**：新增 `gateway_state.db`，记录每个 session 最近注入过的 bucket，配合 `skip_recent_rounds / cooldown_hours / cooldown_floor` 降低同一条记忆反复贴脸的概率。
+- 【二次开发】**多上游模型路由**：支持 `gateway.upstreams` 配多个 OpenAI-compatible provider，`/v1/models` 聚合模型列表，聊天请求按 `model` 自动路由。
+- 【二次开发】**工具调用与流式兼容**：透传 `tools / tool_choice / parallel_tool_calls / tool_calls / tool` 消息，支持 SSE 流式响应，并补齐部分 DeepSeek 工具续写场景里的 `reasoning_content`。
+- 【二次开发】**Supabase 同步与写入 API**：新增 `scripts/sync_to_supabase.py`、`scripts/supabase_memory_rpc.sql` 和认证写入接口，方便把 Ombre 本地桶与外部记忆表双向同步。
+
 ---
 
 ## 快速开始 / Quick Start（Docker Hub 预构建镜像，最简单）
@@ -262,7 +276,7 @@ Ombre Brain gives it persistent memory — not cold key-value storage, but a sys
 python gateway.py
 ```
 
-它暴露两个接口：
+它暴露三个接口：
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
@@ -330,6 +344,491 @@ gateway:
 - `persona.model`: `deepseek-chat`
 
 DeepSeek 每轮只看最后一条 user message，输出固定 JSON。系统会裁剪每次变化幅度：人格慢慢变，关系中速变，当前心情最快变，并按半衰期回落到默认状态。
+
+### Gateway 搭建复盘教程 / Gateway Build Review
+
+这部分由 `Ombre-Brain 网关搭建复盘教程.md` 改写进 README，按这次实战搭建链路整理。敏感 IP、域名、token 和 API key 都用占位符表示。文中带【二次开发】标记的能力，是本仓库基于原版继续改造的部分。
+
+#### 最终目标
+
+把 Ombre-Brain 从“支持 MCP 的客户端主动调用记忆工具”扩展成“普通 OpenAI-compatible 客户端每轮都自动经过 Gateway，由服务端完成记忆召回和注入”。
+
+```text
+MCP 链路：
+支持 MCP 的客户端
+  ↓
+Ombre-Brain MCP
+  ↓
+模型主动调用 breath / hold / trace / dream 等工具
+
+Gateway 链路：【二次开发】
+普通 OpenAI-compatible 客户端
+  ↓
+Ombre Gateway
+  ↓
+更新 Persona State
+  - 长期人格
+  - 会话心情
+  - 关系状态
+  ↓
+召回 Memory
+  - Core Memory
+  - Recent Context
+  - Recalled Memory
+  ↓
+自动注入隐藏 system prompt
+  ↓
+上游聊天模型
+```
+
+实际效果：
+
+![Persona state and reply guidance](docs/assets/gateway-review/persona-state-reply-guidance.png)
+
+![Persona dashboard](docs/assets/gateway-review/persona-state-dashboard.png)
+
+![Memory recall in a fresh window](docs/assets/gateway-review/memory-recall-new-window.png)
+
+![MCP tool call still works](docs/assets/gateway-review/mcp-tool-ok.png)
+
+#### 这次二次开发覆盖的能力
+
+| 标记 | 能力 | 入口/文件 |
+| --- | --- | --- |
+| 原版能力 | MCP 记忆工具、Obsidian Markdown bucket、遗忘曲线、脱水压缩、Dashboard | `server.py`、`bucket_manager.py`、`dehydrator.py`、`decay_engine.py` |
+| 【二次开发】 | OpenAI-compatible Gateway，请求前自动召回并注入记忆 | `gateway.py` |
+| 【二次开发】 | 每个 session 的注入历史、冷却、最近轮次跳过 | `gateway_state.py` |
+| 【二次开发】 | Persona State，全局人格 + 关系 + 会话心情 + 回复姿态 | `persona_engine.py` |
+| 【二次开发】 | 单上游/多上游模型列表与路由 | `gateway.upstreams`、`/v1/models` |
+| 【二次开发】 | 工具调用字段透传、SSE 流式响应、`reasoning_content` 续写修复 | `gateway.py`、`tests/test_gateway.py` |
+| 【二次开发】 | Supabase 双向同步与认证记忆写入接口 | `scripts/sync_to_supabase.py`、`scripts/supabase_memory_rpc.sql` |
+
+#### 每轮聊天的内部流程
+
+```text
+1. 客户端发 POST /v1/chat/completions
+   ↓
+2. Gateway 校验 Authorization: Bearer <OMBRE_GATEWAY_TOKEN>
+   ↓
+3. Gateway 读取 X-Ombre-Session-Id
+   ↓
+4. 取最后一条 user message 作为 query
+   ↓
+5. Persona Engine 更新当前状态【二次开发】
+   ↓
+6. 读取所有未归档 buckets
+   ↓
+7. 选择 Core Memory
+   - pinned / protected 记忆
+   ↓
+8. 选择 Recent Context
+   - 默认最近 72 小时
+   ↓
+9. 选择 Recalled Memory【二次开发】
+   - embedding 语义召回
+   - 关键词模糊召回
+   - 重要度加权
+   - 新鲜度加权
+   ↓
+10. 按阈值最多注入 2 条动态记忆
+   ↓
+11. 拼成隐藏 system message
+   ↓
+12. 插入原 messages
+   ↓
+13. 转发到真实上游模型
+   ↓
+14. 上游回答原样返回客户端
+   ↓
+15. 记录本轮注入过的 bucket【二次开发】
+```
+
+当前动态记忆评分参数：
+
+```text
+semantic_weight：0.45
+keyword_weight：0.35
+importance_weight：0.10
+freshness_weight：0.10
+
+first_card_min_score：0.55
+second_card_min_score：0.50
+inject_max_cards：2
+skip_recent_rounds：5
+cooldown_hours：48
+cooldown_floor：0.3
+```
+
+注入内容分区：
+
+```text
+Current Inner State / Persona State
+  ↓
+Core Memory
+  ↓
+Recent Context
+  ↓
+Recalled Memory
+```
+
+#### Persona State 在网关里的作用【二次开发】
+
+Persona State 让 Gateway 每轮额外维护“此刻的回应状态”：
+
+```text
+这一轮之后，Haven 的状态发生了什么轻微变化？
+  ↓
+当前心情更安心、紧张、兴奋，还是防御？
+  ↓
+关系变量是否缓慢变化？
+  ↓
+回复姿态更温柔、更主动、更克制，还是更有占有感？
+```
+
+状态写入：
+
+```text
+/srv/ombre-brain/buckets/persona_state.db
+```
+
+注入时会变成：
+
+```text
+Current Inner State
+  - personality
+  - relationship
+  - affect
+  - reply posture
+```
+
+所以 Gateway 每轮做两件事：
+
+```text
+记忆召回：让模型知道“发生过什么”
+Persona State：让模型知道“此刻以什么状态回应”
+```
+
+#### 需要准备的 key
+
+客户端访问 Gateway 的 token：
+
+```bash
+OMBRE_GATEWAY_TOKEN=客户端访问网关用的长随机token
+```
+
+Gateway 访问上游聊天模型：
+
+```bash
+OMBRE_GATEWAY_UPSTREAM_API_KEY=上游聊天模型APIKey
+OMBRE_GATEWAY_UPSTREAM_BASE_URL=https://上游模型站/v1
+OMBRE_GATEWAY_UPSTREAM_MODEL=qwen3.5-plus
+OMBRE_GATEWAY_UPSTREAM_MODELS=qwen3.5-plus,qwen3.5-max,qwen-turbo
+```
+
+Embedding 模型：
+
+```bash
+OMBRE_EMBEDDING_API_KEY=embedding模型APIKey
+OMBRE_EMBEDDING_BASE_URL=https://embedding供应商/v1
+OMBRE_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+OMBRE_EMBEDDING_ENABLED=true
+```
+
+Persona 模型【二次开发】：
+
+```bash
+OMBRE_PERSONA_API_KEY=persona模型APIKey
+OMBRE_PERSONA_BASE_URL=https://persona供应商/v1
+OMBRE_PERSONA_MODEL=deepseek-chat
+```
+
+脱水压缩模型：
+
+```bash
+OMBRE_API_KEY=脱水压缩模型APIKey
+```
+
+模型分工：
+
+| 类型 | 用途 | 常见配置 | 调用时机 |
+| --- | --- | --- | --- |
+| 聊天模型 | 最终回答用户 | `gateway.upstreams` 或 `OMBRE_GATEWAY_UPSTREAM_MODEL` | 客户端每次聊天 |
+| Persona 模型【二次开发】 | 更新情绪、关系、人设状态 | `OMBRE_PERSONA_MODEL` | Gateway 每轮聊天前 |
+| 脱水模型 | 把长记忆压成短摘要 | `dehydration.model` 或 `OMBRE_API_KEY` | 记忆整理、压缩、归档 |
+| Embedding 模型 | 把记忆转成向量 | `OMBRE_EMBEDDING_MODEL` | 新增记忆、backfill、召回准备 |
+
+#### 按这次实战部署到 VPS
+
+本仓库默认 compose 文件是 `docker-compose.yml`。这次服务器上使用 `compose.hk.yml` 作为 VPS 定制副本，端口和挂载路径按服务器环境改过。
+
+迁移旧 VPS：
+
+```bash
+cd /opt/Ombre-Brain
+docker compose -f compose.hk.yml down
+
+tar -czf /root/ombre-brain-migration.tar.gz \
+  /opt/Ombre-Brain \
+  /srv/ombre-brain/buckets
+
+sha256sum /root/ombre-brain-migration.tar.gz
+ls -lh /root/ombre-brain-migration.tar.gz
+```
+
+新 VPS 基础规格：
+
+```text
+Ubuntu 22.04
+2C2G
+40G ESSD
+公网 IP 或已备案域名
+```
+
+安全组最小放行：
+
+```text
+TCP 22：本机公网 IP /32
+TCP 18001：Memory MCP / Dashboard
+TCP 18002：Gateway /v1
+```
+
+验证 SSH：
+
+```bash
+ssh root@你的VPS_IP "hostname && echo ok"
+```
+
+大陆 VPS 拉 Docker Hub 容易超时，这次采用阿里云 ACR 中转镜像：
+
+```bash
+docker tag ombre-brain-ombre-brain:latest \
+  crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:brain-latest
+
+docker tag ombre-brain-ombre-gateway:latest \
+  crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:gateway-latest
+
+docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:brain-latest
+docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:gateway-latest
+```
+
+新 VPS 拉取后打回本地镜像名：
+
+```bash
+docker pull crpi-xxxx-vpc.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:brain-latest
+docker pull crpi-xxxx-vpc.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:gateway-latest
+
+docker tag crpi-xxxx-vpc.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:brain-latest \
+  ombre-brain-ombre-brain:latest
+
+docker tag crpi-xxxx-vpc.cn-hangzhou.personal.cr.aliyuncs.com/命名空间/仓库:gateway-latest \
+  ombre-brain-ombre-gateway:latest
+```
+
+启动：
+
+```bash
+cd /opt/Ombre-Brain
+docker compose -f compose.hk.yml up -d --no-build
+```
+
+#### 配置文件口径
+
+这次实际看两个位置：
+
+```text
+/opt/Ombre-Brain/.env
+/srv/ombre-brain/config.yaml
+```
+
+容器里真正读取的是挂载后的路径：
+
+```text
+宿主机真实配置：/srv/ombre-brain/config.yaml
+容器内读取路径：/app/config.yaml
+compose 挂载：/srv/ombre-brain/config.yaml:/app/config.yaml:ro
+```
+
+检查 compose 挂载：
+
+```bash
+cd /opt/Ombre-Brain
+grep -n "config.yaml\|volumes" compose.hk.yml
+```
+
+检查容器实际读到的配置：
+
+```bash
+cd /opt/Ombre-Brain
+docker compose -f compose.hk.yml exec ombre-gateway sh -lc \
+  'sed -n "1,180p" /app/config.yaml'
+```
+
+单上游 `.env` 示例：
+
+```bash
+OMBRE_GATEWAY_TOKEN=换成很长的随机token
+OMBRE_GATEWAY_UPSTREAM_BASE_URL=https://上游模型站/v1
+OMBRE_GATEWAY_UPSTREAM_API_KEY=上游聊天模型key
+OMBRE_GATEWAY_UPSTREAM_MODEL=qwen3.5-plus
+OMBRE_GATEWAY_UPSTREAM_MODELS=qwen3.5-plus,qwen3.5-max,qwen-turbo
+
+OMBRE_EMBEDDING_API_KEY=embedding-key
+OMBRE_EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+OMBRE_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+
+OMBRE_PERSONA_API_KEY=persona-key
+OMBRE_PERSONA_BASE_URL=https://api.deepseek.com/v1
+OMBRE_PERSONA_MODEL=deepseek-chat
+```
+
+多上游 `config.yaml` 示例【二次开发】：
+
+```yaml
+gateway:
+  host: "0.0.0.0"
+  port: 8010
+  upstream_default_model: "qwen3.5-plus"
+  upstreams:
+    - name: "provider-a"
+      base_url: "https://provider-a.example.com/v1"
+      api_key_env: "OMBRE_GATEWAY_PROVIDER_A_API_KEY"
+      default_model: "qwen3.5-plus"
+      models:
+        - "qwen3.5-plus"
+        - "qwen3.5-max"
+    - name: "provider-b"
+      base_url: "https://provider-b.example.com/v1"
+      api_key_env: "OMBRE_GATEWAY_PROVIDER_B_API_KEY"
+      models:
+        - "deepseek-chat"
+        - "deepseek-reasoner"
+```
+
+重启 Gateway：
+
+```bash
+cd /opt/Ombre-Brain
+docker compose -f compose.hk.yml up -d --no-deps ombre-gateway
+```
+
+#### 客户端填写方式
+
+OpenAI-compatible 客户端：
+
+```text
+Base URL：http://你的VPS_IP或域名:18002/v1
+API Key：OMBRE_GATEWAY_TOKEN 的值
+模型：从 /v1/models 返回的列表里选
+```
+
+请求头固定同一个会话：
+
+```text
+X-Ombre-Session-Id: xiaoyu-main
+```
+
+测试模型列表：
+
+```bash
+curl -i http://你的VPS_IP或域名:18002/v1/models \
+  -H "Authorization: Bearer <OMBRE_GATEWAY_TOKEN>"
+```
+
+测试聊天：
+
+```bash
+curl -i http://你的VPS_IP或域名:18002/v1/chat/completions \
+  -H "Authorization: Bearer <OMBRE_GATEWAY_TOKEN>" \
+  -H "X-Ombre-Session-Id: xiaoyu-main" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3.5-plus",
+    "messages": [
+      {"role": "user", "content": "今天我们做到哪里了？"}
+    ]
+  }'
+```
+
+Memory MCP 入口：
+
+```text
+http://你的VPS_IP或域名:18001/mcp
+```
+
+这次先用 IP + 端口直连，链路短，适合个人使用和排错。后续上域名时再加 A 记录、80/443、安全组和反代。
+
+#### Obsidian 与 embedding
+
+记忆存储支线：
+
+```text
+Ombre buckets
+  ↓
+Markdown 文件 + YAML frontmatter
+  ↓
+Obsidian 可直接浏览和编辑
+  ↓
+Syncthing 双向同步到 VPS
+```
+
+语义检索支线：
+
+```text
+bucket 正文
+  ↓
+embedding 模型生成向量
+  ↓
+embeddings.db
+  ↓
+Gateway 每轮按语义相似度召回
+```
+
+Obsidian 手改 Markdown 后重建 embedding：
+
+```bash
+cd /opt/Ombre-Brain
+docker compose -f compose.hk.yml exec ombre-brain python backfill_embeddings.py --batch-size 20
+```
+
+Syncthing 两端使用 `Send & Receive`，VPS 上需要能直接读明文 Markdown。验证：
+
+```bash
+find /srv/ombre-brain/buckets -name "*.md" | head
+sed -n '1,30p' "$(find /srv/ombre-brain/buckets -name "*.md" | head -n 1)"
+```
+
+看到 YAML frontmatter 的 `---` 就说明 bucket 文件可读。
+
+#### 排错速查
+
+VPS 上先进入项目目录：
+
+```bash
+cd /opt/Ombre-Brain
+```
+
+常用命令：
+
+```bash
+docker compose -f compose.hk.yml ps
+docker compose -f compose.hk.yml logs --tail=120 ombre-gateway
+docker compose -f compose.hk.yml logs --tail=120 ombre-brain
+curl http://127.0.0.1:18002/health
+curl http://127.0.0.1:18001/health
+```
+
+典型状态：
+
+| 现象 | 优先检查 | 常见处理 |
+| --- | --- | --- |
+| `/health` 里 `upstream_ready=false` | `/app/config.yaml` 和 `.env` | 修正上游 `base_url / key / model` 后重启 |
+| `/v1/models` 只有示例模型 | config 挂载 | 确认 `/srv/ombre-brain/config.yaml` 挂到 `/app/config.yaml` |
+| 客户端 401 | Gateway token | 客户端 API Key 填 `OMBRE_GATEWAY_TOKEN` |
+| 客户端 400 | 上游模型返回 | 看 `ombre-gateway` 日志里的上游地址、模型名、请求模式 |
+| DeepSeek 工具调用报 `reasoning_content` | provider 类型、模型模式、工具调用续写 | 确认 `thinking_mode` 和工具调用消息格式 |
+| Persona 面板出现很多 session | 请求头 | 固定 `X-Ombre-Session-Id: xiaoyu-main` |
+| Obsidian 手改后检索旧内容 | embedding 旧了 | 跑 `backfill_embeddings.py` |
+| VPS 上 buckets 显示密文 | Syncthing 文件夹类型 | 两端改成 `Send & Receive` |
 
 ## 边界说明 / Design boundaries
 
