@@ -236,6 +236,13 @@ class GatewayService:
         except RuntimeError as exc:
             return self._anthropic_error(str(exc), status_code=503, error_type="server_error")
 
+        if forward_payload.get("stream") is True:
+            return await self._stream_upstream_as_anthropic(
+                forward_payload,
+                session_id,
+                recalled_ids,
+            )
+
         upstream_response = await self._forward_upstream(forward_payload)
         if 200 <= upstream_response.status_code < 300:
             self._capture_reasoning_from_response(session_id, upstream_response)
@@ -442,8 +449,6 @@ class GatewayService:
             )
 
     def _anthropic_request_to_openai(self, payload: dict) -> dict:
-        if payload.get("stream") is True:
-            raise ValueError("stream=true is not supported by /v1/messages yet")
         if payload.get("tools") or payload.get("tool_choice"):
             raise ValueError("Anthropic tool use is not supported by /v1/messages yet")
 
@@ -471,7 +476,7 @@ class GatewayService:
         openai_payload: dict[str, Any] = {
             "model": payload.get("model"),
             "messages": openai_messages,
-            "stream": False,
+            "stream": payload.get("stream") is True,
         }
 
         passthrough_fields = ("max_tokens", "temperature", "top_p")
@@ -544,6 +549,188 @@ class GatewayService:
             },
             status_code=upstream_response.status_code,
         )
+
+    async def _stream_upstream_as_anthropic(
+        self,
+        payload: dict,
+        session_id: str,
+        recalled_ids: list[str],
+    ) -> Response:
+        model = str(payload.get("model") or "").strip()
+        upstream = self._get_upstream_for_model(model)
+        url = f"{upstream['base_url']}/chat/completions"
+        request = self.http_client.build_request(
+            "POST",
+            url,
+            headers={
+                "Authorization": f"Bearer {upstream['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        upstream_response = await self.http_client.send(request, stream=True)
+
+        if not 200 <= upstream_response.status_code < 300:
+            body = await upstream_response.aread()
+            await upstream_response.aclose()
+            return self._proxy_anthropic_error_response(
+                httpx.Response(
+                    status_code=upstream_response.status_code,
+                    content=body,
+                    headers=upstream_response.headers,
+                )
+            )
+
+        async def stream_body():
+            completed = False
+            stream_state = self._new_stream_capture_state()
+            message_id = f"msg_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            stop_reason = "end_turn"
+            content_started = False
+
+            try:
+                yield self._anthropic_sse(
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": message_id,
+                            "type": "message",
+                            "role": "assistant",
+                            "model": model,
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": usage,
+                        },
+                    },
+                )
+                yield self._anthropic_sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+                content_started = True
+
+                async for chunk in upstream_response.aiter_bytes():
+                    if not chunk:
+                        continue
+                    self._consume_stream_capture_chunk(stream_state, chunk)
+                    for event in self._openai_sse_chunk_to_anthropic_events(chunk):
+                        if event.get("_done"):
+                            continue
+                        if event.get("usage"):
+                            usage.update(event["usage"])
+                            continue
+                        if event.get("stop_reason"):
+                            stop_reason = event["stop_reason"]
+                            continue
+                        if event.get("text"):
+                            yield self._anthropic_sse(
+                                "content_block_delta",
+                                {
+                                    "type": "content_block_delta",
+                                    "index": 0,
+                                    "delta": {
+                                        "type": "text_delta",
+                                        "text": event["text"],
+                                    },
+                                },
+                            )
+
+                self._consume_stream_capture_chunk(stream_state, b"", final=True)
+                if content_started:
+                    yield self._anthropic_sse(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": 0},
+                    )
+                yield self._anthropic_sse(
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {
+                            "stop_reason": stop_reason,
+                            "stop_sequence": None,
+                        },
+                        "usage": {"output_tokens": usage.get("output_tokens", 0)},
+                    },
+                )
+                yield self._anthropic_sse(
+                    "message_stop",
+                    {"type": "message_stop"},
+                )
+                completed = True
+            finally:
+                await upstream_response.aclose()
+                if completed:
+                    self._capture_reasoning_from_stream_state(session_id, stream_state)
+                    await self._record_successful_round(session_id, recalled_ids)
+
+        return StreamingResponse(
+            stream_body(),
+            status_code=upstream_response.status_code,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    def _openai_sse_chunk_to_anthropic_events(self, chunk: bytes) -> list[dict[str, Any]]:
+        text = chunk.decode("utf-8", errors="ignore")
+        events: list[dict[str, Any]] = []
+        for raw_event in text.split("\n\n"):
+            for line in raw_event.splitlines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data:
+                    continue
+                if data == "[DONE]":
+                    events.append({"_done": True})
+                    continue
+                try:
+                    body = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                usage = body.get("usage")
+                if isinstance(usage, dict):
+                    events.append(
+                        {
+                            "usage": {
+                                "input_tokens": int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
+                                "output_tokens": int(
+                                    usage.get("output_tokens") or usage.get("completion_tokens") or 0
+                                ),
+                            }
+                        }
+                    )
+                choices = body.get("choices")
+                if not isinstance(choices, list):
+                    continue
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        continue
+                    finish_reason = choice.get("finish_reason")
+                    if finish_reason:
+                        events.append({"stop_reason": self._openai_finish_reason_to_anthropic(finish_reason)})
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    if delta.get("tool_calls"):
+                        continue
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        events.append({"text": content})
+        return events
+
+    def _anthropic_sse(self, event: str, data: dict[str, Any]) -> bytes:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
     def _openai_finish_reason_to_anthropic(self, finish_reason: Any) -> str:
         mapping = {

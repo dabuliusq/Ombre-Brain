@@ -282,11 +282,41 @@ def test_gateway_defaults_anthropic_session_id(monkeypatch, test_config, bucket_
     assert state_store.get_recent_bucket_ids("xiaoyu-main", 5) == set()
 
 
-def test_gateway_rejects_anthropic_streaming(monkeypatch, test_config, bucket_mgr):
-    app, _, _, captured = _build_service(monkeypatch, _gateway_config(test_config), bucket_mgr)
+def test_gateway_streams_anthropic_messages(monkeypatch, test_config, bucket_mgr):
+    monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("OMBRE_GATEWAY_UPSTREAM_API_KEY", "upstream-secret")
+
+    captured = []
+
+    def upstream_handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                b'data: {"choices":[{"delta":{"content":"he"}}]}\n\n'
+                b'data: {"choices":[{"delta":{"content":"llo"},"finish_reason":"stop"}],'
+                b'"usage":{"prompt_tokens":11,"completion_tokens":2}}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
+
+    state_store = GatewayStateStore(f"{test_config['buckets_dir']}\\gateway_state.db")
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler), timeout=10.0)
+    service = GatewayService(
+        config=_gateway_config(test_config, upstream_default_model="qwen3.5-plus"),
+        bucket_mgr=bucket_mgr,
+        dehydrator=DummyDehydrator(),
+        embedding_engine=DummyEmbeddingEngine(enabled=False),
+        state_store=state_store,
+        persona_engine=DummyPersonaEngine(),
+        http_client=http_client,
+    )
+    app = create_gateway_app(config=test_config, service=service)
 
     with TestClient(app) as client:
-        response = client.post(
+        with client.stream(
+            "POST",
             "/v1/messages",
             headers={
                 "x-api-key": "gateway-secret",
@@ -298,12 +328,21 @@ def test_gateway_rejects_anthropic_streaming(monkeypatch, test_config, bucket_mg
                 "max_tokens": 128,
                 "stream": True,
             },
-        )
+        ) as response:
+            body = response.read().decode("utf-8")
 
-    assert response.status_code == 400
-    assert response.json()["type"] == "error"
-    assert "stream=true" in response.json()["error"]["message"]
-    assert captured == []
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert captured[0]["stream"] is True
+    assert "event: message_start" in body
+    assert "event: content_block_start" in body
+    assert '"text": "he"' in body
+    assert '"text": "llo"' in body
+    assert "event: content_block_stop" in body
+    assert "event: message_delta" in body
+    assert '"stop_reason": "end_turn"' in body
+    assert "event: message_stop" in body
+    assert state_store.get_recent_bucket_ids("sess-anthropic", 5) == set()
 
 
 def test_gateway_streams_when_client_requires_stream(monkeypatch, test_config, bucket_mgr):
