@@ -90,9 +90,9 @@ class BucketManager:
         scoring = config.get("scoring_weights", {})
         self.w_topic = scoring.get("topic_relevance", 4.0)
         self.w_emotion = scoring.get("emotion_resonance", 2.0)
-        self.w_time = scoring.get("time_proximity", 2.5)
+        self.w_time = scoring.get("time_proximity", 1.5)
         self.w_importance = scoring.get("importance", 1.0)
-        self.content_weight = scoring.get("content_weight", 3.0)  # Added to allow better content-based matching during merge
+        self.content_weight = scoring.get("content_weight", 1.0)  # Added to allow better content-based matching during merge
 
     # ---------------------------------------------------------
     # Create a new bucket
@@ -117,6 +117,7 @@ class BucketManager:
         created: str = None,
         last_active: str = None,
         updated_at: str = None,
+        anchor: bool = False,
         resolved: bool = False,
         digested: bool = False,
     ) -> str:
@@ -155,12 +156,14 @@ class BucketManager:
             "created": created_at,
             "last_active": last_active_at,
             "updated_at": updated_at_value,
-            "activation_count": 1,
+            "activation_count": 0,
         }
         if pinned:
             metadata["pinned"] = True
         if protected:
             metadata["protected"] = True
+        if anchor:
+            metadata["anchor"] = True
         if resolved:
             metadata["resolved"] = True
         if digested:
@@ -293,6 +296,8 @@ class BucketManager:
             post["pinned"] = bool(kwargs["pinned"])
             if kwargs["pinned"]:
                 post["importance"] = 10  # pinned → lock importance to 10
+        if "anchor" in kwargs:
+            post["anchor"] = bool(kwargs["anchor"])
         if "digested" in kwargs:
             post["digested"] = bool(kwargs["digested"])
         if "model_valence" in kwargs:
@@ -312,19 +317,14 @@ class BucketManager:
             logger.error(f"Failed to write bucket update / 写入桶更新失败: {file_path}: {e}")
             return False
 
-        # --- Auto-move: pinned → permanent/, resolved → archive/ ---
-        # --- 自动移动：钉选 → permanent/，已解决 → archive/ ---
+        # --- Auto-move: pinned → permanent/ ---
+        # --- 自动移动：钉选 → permanent/ ---
         domain = post.get("domain", ["未分类"])
         if kwargs.get("pinned") and post.get("type") != "permanent":
             post["type"] = "permanent"
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(frontmatter.dumps(post))
             self._move_bucket(file_path, self.permanent_dir, domain)
-        elif kwargs.get("resolved") and post.get("type") not in ("permanent", "feel"):
-            post["type"] = "archived"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
-            self._move_bucket(file_path, self.archive_dir, domain)
 
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
         return True
@@ -509,6 +509,7 @@ class BucketManager:
         domain_filter: list[str] = None,
         query_valence: float = None,
         query_arousal: float = None,
+        include_archive: bool = True,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -521,7 +522,7 @@ class BucketManager:
             return []
 
         limit = limit or self.max_results
-        all_buckets = await self.list_all(include_archive=False)
+        all_buckets = await self.list_all(include_archive=include_archive)
 
         if not all_buckets:
             return []
@@ -573,12 +574,11 @@ class BucketManager:
                 weight_sum = self.w_topic + self.w_emotion + self.w_time + self.w_importance
                 normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
 
-                # Resolved buckets get ranking penalty (but still reachable by keyword)
-                # 已解决的桶降权排序（但仍可被关键词激活）
-                if meta.get("resolved", False):
-                    normalized *= 0.3
-
                 if normalized >= self.fuzzy_threshold:
+                    # Resolved buckets get ranking penalty after thresholding.
+                    # 已解决桶先按相关性过阈值，再在排序阶段降权。
+                    if meta.get("resolved", False):
+                        normalized *= 0.3
                     bucket["score"] = round(normalized, 2)
                     scored.append(bucket)
             except Exception as e:
@@ -665,7 +665,7 @@ class BucketManager:
         else:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             days = max(0.0, (now - last_active).total_seconds() / 86400)
-        return math.exp(-0.1 * days)
+        return math.exp(-0.02 * days)
 
     def _parse_iso_datetime(self, value) -> Optional[datetime]:
         if not value:

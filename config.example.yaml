@@ -54,8 +54,22 @@ dehydration:
   #   vLLM:        http://localhost:8000/v1
   #   Gemini:      https://generativelanguage.googleapis.com/v1beta/openai
   # api_key: ""    # ⚠️ Use env var OMBRE_API_KEY instead / 请使用环境变量 OMBRE_API_KEY
+  # Env overrides / 环境变量覆盖:
+  #   OMBRE_API_KEY
+  #   OMBRE_BASE_URL
+  #   OMBRE_DEHYDRATION_BASE_URL
+  #   OMBRE_DEHYDRATION_MODEL
+  #   OMBRE_MODEL
   max_tokens: 1024
   temperature: 0.1
+
+# --- Anchor / 长期锚点 ---
+# anchor is a small curated set of long-term important memories.
+# It works beside breath surfacing and keyword search.
+# anchor 是少量长期重要记忆的标记，和 breath 浮现、关键词检索各自分工。
+anchor:
+  max_count: 24
+  min_age_hours: 24
 
 # --- Decay parameters / 记忆衰减参数 ---
 # Simulates Ebbinghaus forgetting curve, auto-archives inactive memories

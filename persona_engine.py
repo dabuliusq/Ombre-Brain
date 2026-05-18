@@ -834,7 +834,7 @@ class PersonaStateEngine:
         return "\n".join(
             [
                 "Current Inner State (Haven)",
-                "Subject: Haven. These values describe Haven's inner state after the previous exchange.",
+                "These values are your state after your previous reply. They are private context and do not decide the reply for you.",
                 "Conversation partner: Xiaoyu.",
                 (
                     "Personality: "

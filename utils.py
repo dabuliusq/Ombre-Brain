@@ -61,6 +61,10 @@ def load_config(config_path: str = None) -> dict:
             "fuzzy_threshold": 50,
             "max_results": 5,
         },
+        "anchor": {
+            "max_count": 24,
+            "min_age_hours": 24,
+        },
         "gateway": {
             "host": "0.0.0.0",
             "port": 8010,
@@ -164,6 +168,14 @@ def load_config(config_path: str = None) -> dict:
     env_base_url = os.environ.get("OMBRE_BASE_URL", "")
     if env_base_url:
         config.setdefault("dehydration", {})["base_url"] = env_base_url
+
+    env_dehydration_base_url = os.environ.get("OMBRE_DEHYDRATION_BASE_URL", "")
+    if env_dehydration_base_url:
+        config.setdefault("dehydration", {})["base_url"] = env_dehydration_base_url
+
+    env_dehydration_model = os.environ.get("OMBRE_DEHYDRATION_MODEL", "") or os.environ.get("OMBRE_MODEL", "")
+    if env_dehydration_model:
+        config.setdefault("dehydration", {})["model"] = env_dehydration_model
 
     env_embedding_api_key = os.environ.get("OMBRE_EMBEDDING_API_KEY", "")
     if env_embedding_api_key:

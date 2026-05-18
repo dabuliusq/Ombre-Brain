@@ -39,7 +39,11 @@ def _parse_claude_json(data: dict | list) -> list[dict]:
     turns = []
     conversations = data if isinstance(data, list) else [data]
     for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
         messages = conv.get("chat_messages", conv.get("messages", []))
+        if not isinstance(messages, list):
+            continue
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
@@ -48,6 +52,14 @@ def _parse_claude_json(data: dict | list) -> list[dict]:
                 content = " ".join(
                     p.get("text", "") for p in content if isinstance(p, dict)
                 )
+            elif isinstance(content, dict):
+                content = " ".join(
+                    str(p.get("text", p)) if isinstance(p, dict) else str(p)
+                    for p in content.get("parts", [])
+                    if p
+                )
+            elif not isinstance(content, str):
+                content = str(content)
             if not content or not content.strip():
                 continue
             role = msg.get("sender", msg.get("role", "user"))
@@ -61,22 +73,33 @@ def _parse_chatgpt_json(data: list | dict) -> list[dict]:
     turns = []
     conversations = data if isinstance(data, list) else [data]
     for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
         mapping = conv.get("mapping", {})
-        if mapping:
+        if isinstance(mapping, dict) and mapping:
             # ChatGPT uses a tree structure with mapping
             sorted_nodes = sorted(
-                mapping.values(),
-                key=lambda n: n.get("message", {}).get("create_time", 0) or 0,
+                [node for node in mapping.values() if isinstance(node, dict)],
+                key=lambda n: (n.get("message") or {}).get("create_time", 0) or 0,
             )
             for node in sorted_nodes:
                 msg = node.get("message")
                 if not msg or not isinstance(msg, dict):
                     continue
-                content_parts = msg.get("content", {}).get("parts", [])
-                content = " ".join(str(p) for p in content_parts if p)
+                content_obj = msg.get("content", {})
+                if isinstance(content_obj, dict):
+                    content_parts = content_obj.get("parts", [])
+                    content = " ".join(str(p) for p in content_parts if p)
+                elif isinstance(content_obj, str):
+                    content = content_obj
+                else:
+                    content = ""
+                if not isinstance(content, str):
+                    content = str(content)
                 if not content.strip():
                     continue
-                role = msg.get("author", {}).get("role", "user")
+                author = msg.get("author", {})
+                role = author.get("role", "user") if isinstance(author, dict) else "user"
                 ts = msg.get("create_time", "")
                 if isinstance(ts, (int, float)):
                     ts = datetime.fromtimestamp(ts).isoformat()
@@ -84,15 +107,26 @@ def _parse_chatgpt_json(data: list | dict) -> list[dict]:
         else:
             # Simpler format: list of messages
             messages = conv.get("messages", [])
+            if not isinstance(messages, list):
+                continue
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
                 content = msg.get("content", msg.get("text", ""))
                 if isinstance(content, dict):
                     content = " ".join(str(p) for p in content.get("parts", []))
+                elif isinstance(content, list):
+                    content = " ".join(
+                        str(p.get("text", p)) if isinstance(p, dict) else str(p)
+                        for p in content
+                        if p
+                    )
+                elif not isinstance(content, str):
+                    content = str(content)
                 if not content or not content.strip():
                     continue
-                role = msg.get("role", msg.get("author", {}).get("role", "user"))
+                author = msg.get("author", {})
+                role = msg.get("role") or (author.get("role") if isinstance(author, dict) else None) or "user"
                 ts = msg.get("timestamp", msg.get("create_time", ""))
                 turns.append({"role": role, "content": content.strip(), "timestamp": str(ts)})
     return turns
@@ -168,7 +202,7 @@ def detect_and_parse(raw_content: str, filename: str = "") -> list[dict]:
                 # Single conversation object with role/content messages
                 if "role" in sample and "content" in sample:
                     return _parse_claude_json(data)
-        except (json.JSONDecodeError, KeyError, IndexError):
+        except (json.JSONDecodeError, KeyError, IndexError, AttributeError, TypeError):
             pass
 
     # Fall back to markdown/text
@@ -628,7 +662,12 @@ class ImportEngine:
         name = item.get("name", "")
 
         try:
-            existing = await self.bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+            existing = await self.bucket_mgr.search(
+                content,
+                limit=1,
+                domain_filter=domain or None,
+                include_archive=False,
+            )
         except Exception:
             existing = []
 
@@ -636,7 +675,11 @@ class ImportEngine:
 
         if existing and existing[0].get("score", 0) > merge_threshold:
             bucket = existing[0]
-            if not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
+            if not (
+                bucket["metadata"].get("pinned")
+                or bucket["metadata"].get("protected")
+                or bucket["metadata"].get("type") == "feel"
+            ):
                 try:
                     merged = await self.dehydrator.merge(bucket["content"], content)
                     self.state.data["api_calls"] += 1

@@ -35,8 +35,12 @@ import sys
 import random
 import logging
 import asyncio
+import hashlib
 import hmac
+import json as _json_lib
 import re
+import secrets
+import time
 from datetime import datetime, timezone
 import httpx
 
@@ -82,6 +86,101 @@ mcp = FastMCP(
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+_dashboard_sessions: dict[str, float] = {}
+
+
+def _dashboard_auth_file() -> str:
+    state_dir = config.get("state_dir") or os.path.join(
+        os.path.dirname(os.path.abspath(config.get("buckets_dir", "buckets"))),
+        "state",
+    )
+    return os.path.join(state_dir, ".dashboard_auth.json")
+
+
+def _load_dashboard_password_hash() -> str | None:
+    try:
+        path = _dashboard_auth_file()
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = _json_lib.load(f)
+            return data.get("password_hash")
+    except Exception:
+        logger.warning("Failed to load dashboard auth file", exc_info=True)
+    return None
+
+
+def _save_dashboard_password_hash(password: str) -> None:
+    salt = secrets.token_hex(16)
+    digest = hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+    path = _dashboard_auth_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        _json_lib.dump({"password_hash": f"{salt}:{digest}"}, f)
+
+
+def _verify_dashboard_hash(password: str, stored: str) -> bool:
+    if ":" not in stored:
+        return False
+    salt, digest = stored.split(":", 1)
+    current = hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+    return hmac.compare_digest(digest, current)
+
+
+def _dashboard_setup_needed() -> bool:
+    if os.environ.get("OMBRE_DASHBOARD_PASSWORD", ""):
+        return False
+    return _load_dashboard_password_hash() is None
+
+
+def _verify_dashboard_password(password: str) -> bool:
+    env_password = os.environ.get("OMBRE_DASHBOARD_PASSWORD", "")
+    if env_password:
+        return hmac.compare_digest(password, env_password)
+    stored = _load_dashboard_password_hash()
+    return bool(stored and _verify_dashboard_hash(password, stored))
+
+
+def _create_dashboard_session() -> str:
+    token = secrets.token_urlsafe(32)
+    _dashboard_sessions[token] = time.time() + 86400 * 7
+    return token
+
+
+def _dashboard_authenticated(request) -> bool:
+    token = request.cookies.get("ombre_session")
+    if not token:
+        return False
+    expiry = _dashboard_sessions.get(token)
+    if expiry is None or time.time() > expiry:
+        _dashboard_sessions.pop(token, None)
+        return False
+    return True
+
+
+def _require_dashboard_auth(request):
+    from starlette.responses import JSONResponse
+    if _dashboard_authenticated(request):
+        return None
+    return JSONResponse(
+        {"error": "unauthorized", "setup_needed": _dashboard_setup_needed()},
+        status_code=401,
+    )
+
+
+def _dashboard_login_response():
+    from starlette.responses import JSONResponse
+    token = _create_dashboard_session()
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        "ombre_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        max_age=86400 * 7,
+    )
+    return response
 
 
 def _memory_write_token() -> str:
@@ -146,12 +245,142 @@ def _bool_value(value, default: bool = False) -> bool:
     return bool(value)
 
 
+def _anchor_config() -> tuple[int, float]:
+    anchor_cfg = config.get("anchor", {}) if isinstance(config.get("anchor", {}), dict) else {}
+    max_count = _int_between(anchor_cfg.get("max_count"), 24, 1, 200)
+    try:
+        min_age_hours = float(anchor_cfg.get("min_age_hours", 24))
+    except (TypeError, ValueError):
+        min_age_hours = 24.0
+    return max_count, max(0.0, min_age_hours)
+
+
+def _bucket_age_hours(bucket: dict) -> float | None:
+    created = bucket.get("metadata", {}).get("created", "")
+    if not created:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 3600)
+
+
+async def _can_mark_anchor(bucket_id: str, bucket: dict) -> tuple[bool, str]:
+    max_count, min_age_hours = _anchor_config()
+    age_hours = _bucket_age_hours(bucket)
+    if age_hours is not None and age_hours < min_age_hours:
+        return (
+            False,
+            f"这条记忆还太新，anchor 至少等待 {min_age_hours:g} 小时后再标记。",
+        )
+    all_buckets = await bucket_mgr.list_all(include_archive=True)
+    anchor_count = sum(
+        1
+        for b in all_buckets
+        if b["id"] != bucket_id and b.get("metadata", {}).get("anchor")
+    )
+    if anchor_count >= max_count:
+        return False, f"anchor 名额已满（{max_count} 条）。请先取消一条旧 anchor。"
+    return True, ""
+
+
+def _bucket_read_payload(bucket: dict) -> dict:
+    meta = bucket.get("metadata", {})
+    fields = [
+        "id",
+        "name",
+        "type",
+        "domain",
+        "tags",
+        "importance",
+        "valence",
+        "arousal",
+        "model_valence",
+        "pinned",
+        "protected",
+        "resolved",
+        "digested",
+        "anchor",
+        "source",
+        "created",
+        "updated_at",
+        "last_active",
+        "activation_count",
+    ]
+    return {
+        "id": bucket["id"],
+        "metadata": {key: meta.get(key) for key in fields if key in meta},
+        "content": strip_wikilinks(bucket.get("content", "")),
+        "score": decay_engine.calculate_score(meta),
+    }
+
+
 # =============================================================
 # /health endpoint: lightweight keepalive
 # 轻量保活接口
 # For Cloudflare Tunnel or reverse proxy to ping, preventing idle timeout
 # 供 Cloudflare Tunnel 或反代定期 ping，防止空闲超时断连
 # =============================================================
+@mcp.custom_route("/", methods=["GET"])
+async def root_redirect(request):
+    from starlette.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard")
+
+
+@mcp.custom_route("/auth/status", methods=["GET"])
+async def auth_status(request):
+    from starlette.responses import JSONResponse
+    return JSONResponse(
+        {
+            "authenticated": _dashboard_authenticated(request),
+            "setup_needed": _dashboard_setup_needed(),
+        }
+    )
+
+
+@mcp.custom_route("/auth/setup", methods=["POST"])
+async def auth_setup(request):
+    from starlette.responses import JSONResponse
+    if not _dashboard_setup_needed():
+        return JSONResponse({"error": "already configured"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    password = str(body.get("password") or "").strip()
+    if len(password) < 6:
+        return JSONResponse({"error": "password must be at least 6 characters"}, status_code=400)
+    _save_dashboard_password_hash(password)
+    return _dashboard_login_response()
+
+
+@mcp.custom_route("/auth/login", methods=["POST"])
+async def auth_login(request):
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    password = str(body.get("password") or "")
+    if _verify_dashboard_password(password):
+        return _dashboard_login_response()
+    return JSONResponse({"error": "password rejected"}, status_code=401)
+
+
+@mcp.custom_route("/auth/logout", methods=["POST"])
+async def auth_logout(request):
+    from starlette.responses import JSONResponse
+    token = request.cookies.get("ombre_session")
+    if token:
+        _dashboard_sessions.pop(token, None)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("ombre_session")
+    return response
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import JSONResponse
@@ -279,7 +508,12 @@ async def _merge_or_create(
     返回 (桶ID或名称, 是否合并)。
     """
     try:
-        existing = await bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+        existing = await bucket_mgr.search(
+            content,
+            limit=1,
+            domain_filter=domain or None,
+            include_archive=False,
+        )
     except Exception as e:
         logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
         existing = []
@@ -288,7 +522,11 @@ async def _merge_or_create(
         bucket = existing[0]
         # --- Never merge into pinned/protected buckets ---
         # --- 不合并到钉选/保护桶 ---
-        if not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
+        if not (
+            bucket["metadata"].get("pinned")
+            or bucket["metadata"].get("protected")
+            or bucket["metadata"].get("type") == "feel"
+        ):
             try:
                 merged = await dehydrator.merge(bucket["content"], content)
                 old_v = bucket["metadata"].get("valence", 0.5)
@@ -487,10 +725,6 @@ async def breath(
         logger.error(f"Search failed / 检索失败: {e}")
         return "检索过程出错，请稍后重试。"
 
-    # --- Exclude pinned/protected from search results (they surface in surfacing mode) ---
-    # --- 搜索模式排除钉选桶（它们在浮现模式中始终可见）---
-    matches = [b for b in matches if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))]
-
     # --- Vector similarity channel: find semantically related buckets ---
     # --- 向量相似度通道：找到语义相关的桶 ---
     matched_ids = {b["id"] for b in matches}
@@ -499,7 +733,7 @@ async def breath(
         for bucket_id, sim_score in vector_results:
             if bucket_id not in matched_ids and sim_score > 0.5:
                 bucket = await bucket_mgr.get(bucket_id)
-                if bucket and not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
+                if bucket:
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
                     matches.append(bucket)
@@ -561,6 +795,22 @@ async def breath(
         return "未找到相关记忆。"
 
     return "\n---\n".join(results)
+
+
+# =============================================================
+# Tool 1.5: read_bucket — exact archive-cabinet read
+# 工具 1.5：read_bucket — 按 ID 精确读桶
+# =============================================================
+@mcp.tool()
+async def read_bucket(bucket_id: str) -> dict:
+    """按 bucket_id 精确读取完整记忆桶，返回正文和元数据。不触碰 last_active，也不影响自然浮现权重。"""
+    bucket_id = (bucket_id or "").strip()
+    if not bucket_id or not MEMORY_ID_RE.fullmatch(bucket_id):
+        return {"error": "invalid bucket_id"}
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return {"error": "not found", "id": bucket_id}
+    return _bucket_read_payload(bucket)
 
 
 # =============================================================
@@ -772,11 +1022,12 @@ async def trace(
     tags: str = "",
     resolved: int = -1,
     pinned: int = -1,
+    anchor: int = -1,
     digested: int = -1,
     content: str = "",
     delete: bool = False,
 ) -> str:
-    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
+    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,anchor=1长期锚点/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
 
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
@@ -812,6 +1063,12 @@ async def trace(
         updates["pinned"] = bool(pinned)
         if pinned == 1:
             updates["importance"] = 10  # pinned → lock importance
+    if anchor in (0, 1):
+        if anchor == 1:
+            ok, message = await _can_mark_anchor(bucket_id, bucket)
+            if not ok:
+                return message
+        updates["anchor"] = bool(anchor)
     if digested in (0, 1):
         updates["digested"] = bool(digested)
     if content:
@@ -846,6 +1103,8 @@ async def trace(
             changed += " → 已隐藏，保留但不再浮现"
         else:
             changed += " → 已取消隐藏，重新参与浮现"
+    if "anchor" in updates:
+        changed += " → 已标为 anchor" if updates["anchor"] else " → 已取消 anchor"
     return f"已修改记忆桶 {bucket_id}: {changed}"
 
 
@@ -884,6 +1143,8 @@ async def pulse(include_archive: bool = False) -> str:
         meta = b.get("metadata", {})
         if meta.get("pinned") or meta.get("protected"):
             icon = "📌"
+        elif meta.get("anchor"):
+            icon = "⚓"
         elif meta.get("type") == "permanent":
             icon = "📦"
         elif meta.get("type") == "feel":
@@ -1088,6 +1349,7 @@ async def api_create_memory(request):
     arousal = _float_between(body.get("arousal"), 0.5)
     pinned = _bool_value(body.get("pinned"), False)
     protected = _bool_value(body.get("protected"), False)
+    anchor = _bool_value(body.get("anchor"), False)
     resolved = _bool_value(body.get("resolved"), False)
     digested = _bool_value(body.get("digested"), False)
 
@@ -1104,6 +1366,7 @@ async def api_create_memory(request):
             name=title,
             resolved=resolved,
             pinned=pinned,
+            anchor=anchor,
             digested=digested,
             source="chatgpt",
             last_active=str(body.get("last_active") or now),
@@ -1124,6 +1387,7 @@ async def api_create_memory(request):
             name=title,
             pinned=pinned,
             protected=protected,
+            anchor=anchor,
             resolved=resolved,
             digested=digested,
             bucket_id=bucket_id,
@@ -1151,6 +1415,9 @@ async def api_create_memory(request):
 async def api_buckets(request):
     """List all buckets with metadata (no content for efficiency)."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=True)
         result = []
@@ -1168,10 +1435,11 @@ async def api_buckets(request):
                 "importance": meta.get("importance", 5),
                 "resolved": meta.get("resolved", False),
                 "pinned": meta.get("pinned", False),
+                "anchor": meta.get("anchor", False),
                 "digested": meta.get("digested", False),
                 "created": meta.get("created", ""),
                 "last_active": meta.get("last_active", ""),
-                "activation_count": meta.get("activation_count", 1),
+                "activation_count": meta.get("activation_count", 0),
                 "score": decay_engine.calculate_score(meta),
                 "content_preview": strip_wikilinks(b.get("content", ""))[:200],
             })
@@ -1185,23 +1453,23 @@ async def api_buckets(request):
 async def api_bucket_detail(request):
     """Get full bucket content by ID."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     bucket_id = request.path_params["bucket_id"]
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
         return JSONResponse({"error": "not found"}, status_code=404)
-    meta = bucket.get("metadata", {})
-    return JSONResponse({
-        "id": bucket["id"],
-        "metadata": meta,
-        "content": strip_wikilinks(bucket.get("content", "")),
-        "score": decay_engine.calculate_score(meta),
-    })
+    return JSONResponse(_bucket_read_payload(bucket))
 
 
 @mcp.custom_route("/api/search", methods=["GET"])
 async def api_search(request):
     """Search buckets by query."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     query = request.query_params.get("q", "")
     if not query:
         return JSONResponse({"error": "missing q parameter"}, status_code=400)
@@ -1213,10 +1481,17 @@ async def api_search(request):
             result.append({
                 "id": b["id"],
                 "name": meta.get("name", b["id"]),
+                "type": meta.get("type", "dynamic"),
                 "score": b.get("score", 0),
                 "domain": meta.get("domain", []),
                 "valence": meta.get("valence", 0.5),
                 "arousal": meta.get("arousal", 0.3),
+                "resolved": meta.get("resolved", False),
+                "pinned": meta.get("pinned", False),
+                "anchor": meta.get("anchor", False),
+                "digested": meta.get("digested", False),
+                "last_active": meta.get("last_active", ""),
+                "created": meta.get("created", ""),
                 "content_preview": strip_wikilinks(b.get("content", ""))[:200],
             })
         return JSONResponse(result)
@@ -1228,6 +1503,9 @@ async def api_search(request):
 async def api_network(request):
     """Get embedding similarity network for visualization."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         nodes = []
@@ -1247,6 +1525,7 @@ async def api_network(request):
                 "score": decay_engine.calculate_score(meta),
                 "resolved": meta.get("resolved", False),
                 "pinned": meta.get("pinned", False),
+                "anchor": meta.get("anchor", False),
                 "digested": meta.get("digested", False),
             })
             if embedding_engine and embedding_engine.enabled:
@@ -1271,6 +1550,9 @@ async def api_network(request):
 async def api_breath_debug(request):
     """Debug endpoint: simulate breath scoring and return per-bucket breakdown."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     query = request.query_params.get("q", "")
     q_valence = request.query_params.get("valence")
     q_arousal = request.query_params.get("arousal")
@@ -1315,6 +1597,7 @@ async def api_breath_debug(request):
                     "type": meta.get("type", "dynamic"),
                     "resolved": resolved,
                     "pinned": meta.get("pinned", False),
+                    "anchor": meta.get("anchor", False),
                     "scores": {
                         "topic": round(topic, 4),
                         "emotion": round(emotion, 4),
@@ -1362,6 +1645,9 @@ async def dashboard(request):
 async def api_persona_get(request):
     """Return Persona State Engine data for the local dashboard."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
 
     def _bounded_int(value, default, lower, upper):
         try:
@@ -1389,6 +1675,9 @@ async def api_persona_get(request):
 async def api_config_get(request):
     """Get current runtime config (safe fields only, API key masked)."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
 
     def _mask_key(api_key: str) -> str:
         return f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else ("***" if api_key else "")
@@ -1422,6 +1711,9 @@ async def api_config_update(request):
     """Hot-update runtime config. Optionally persist to config.yaml."""
     from starlette.responses import JSONResponse
     import yaml
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     try:
         body = await request.json()
     except Exception:
@@ -1527,6 +1819,35 @@ async def api_config_update(request):
     return JSONResponse({"updated": updated, "ok": True})
 
 
+@mcp.custom_route("/api/status", methods=["GET"])
+async def api_status(request):
+    """Return dashboard-visible system status."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        stats = await bucket_mgr.get_stats()
+        return JSONResponse(
+            {
+                "decay_engine": "running" if decay_engine.is_running else "stopped",
+                "buckets": {
+                    "permanent": stats.get("permanent_count", 0),
+                    "dynamic": stats.get("dynamic_count", 0),
+                    "archive": stats.get("archive_count", 0),
+                    "feel": stats.get("feel_count", 0),
+                    "total": stats.get("permanent_count", 0)
+                    + stats.get("dynamic_count", 0)
+                    + stats.get("archive_count", 0)
+                    + stats.get("feel_count", 0),
+                },
+                "using_env_password": bool(os.environ.get("OMBRE_DASHBOARD_PASSWORD", "")),
+            }
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # =============================================================
 # Import API — conversation history import
 # 导入 API — 对话历史导入
@@ -1536,6 +1857,9 @@ async def api_config_update(request):
 async def api_import_upload(request):
     """Upload a conversation file and start import."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
 
     if import_engine.is_running:
         return JSONResponse({"error": "Import already running"}, status_code=409)
@@ -1587,6 +1911,9 @@ async def api_import_upload(request):
 async def api_import_status(request):
     """Get current import progress."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     return JSONResponse(import_engine.get_status())
 
 
@@ -1594,6 +1921,9 @@ async def api_import_status(request):
 async def api_import_pause(request):
     """Pause the running import."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     if not import_engine.is_running:
         return JSONResponse({"error": "No import running"}, status_code=400)
     import_engine.pause()
@@ -1604,6 +1934,9 @@ async def api_import_pause(request):
 async def api_import_patterns(request):
     """Detect high-frequency patterns after import."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     try:
         patterns = await import_engine.detect_patterns()
         return JSONResponse({"patterns": patterns})
@@ -1615,6 +1948,9 @@ async def api_import_patterns(request):
 async def api_import_results(request):
     """List recently imported/created buckets for review."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     try:
         limit = int(request.query_params.get("limit", "50"))
         all_buckets = await bucket_mgr.list_all(include_archive=False)
@@ -1641,6 +1977,9 @@ async def api_import_results(request):
 async def api_import_review(request):
     """Apply review decisions: mark buckets as important/noise/pinned."""
     from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
     try:
         body = await request.json()
     except Exception:
@@ -1662,6 +2001,14 @@ async def api_import_review(request):
                 await bucket_mgr.update(bid, importance=9)
             elif action == "pin":
                 await bucket_mgr.update(bid, pinned=True)
+            elif action == "anchor":
+                bucket = await bucket_mgr.get(bid)
+                if not bucket:
+                    raise ValueError("bucket not found")
+                ok, message = await _can_mark_anchor(bid, bucket)
+                if not ok:
+                    raise ValueError(message)
+                await bucket_mgr.update(bid, anchor=True)
             elif action == "noise":
                 await bucket_mgr.update(bid, resolved=True, importance=1)
             elif action == "delete":
