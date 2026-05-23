@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from bucket_manager import BucketManager
 from gateway import GatewayService
 from memory_edges import MemoryEdgeStore
-from reflection_engine import REFLECT_PROMPT, ReflectionEngine
+from reflection_engine import CLASSIFY_PROMPT, REFLECT_PROMPT, ReflectionEngine
 
 
 class DummyDehydrator:
@@ -60,6 +60,13 @@ def test_reflect_prompt_does_not_offer_fixed_chord_template():
     assert "Fmaj9 -> C/E -> Am add9 -> G6sus4" not in REFLECT_PROMPT
     assert "不要复用 schema 示例、旧输出或固定模板" in REFLECT_PROMPT
     assert "不要默认复用最近日印象里常见的四和弦温柔模板" in REFLECT_PROMPT
+    assert "先在内部感受这段关系天气的情绪运动" in REFLECT_PROMPT
+
+
+def test_classify_prompt_requires_felt_non_template_affect_anchor():
+    assert "Fmaj9 -> C/E -> Am add9 -> G6sus4" not in CLASSIFY_PROMPT
+    assert "先在内部感受这条记忆的情绪运动" in CLASSIFY_PROMPT
+    assert "只能是一行 2 到 4 个和弦" in CLASSIFY_PROMPT
 
 
 def test_fallback_reflection_anchor_varies_by_day(test_config):
@@ -103,7 +110,7 @@ def test_memory_edge_store_dedupes_and_returns_related(test_config):
 
 
 @pytest.mark.asyncio
-async def test_reflection_enrich_bucket_adds_commitment_tags(test_config):
+async def test_reflection_enrich_bucket_does_not_fallback_to_template_anchor(test_config):
     cfg = _no_api_config(test_config)
     bucket_mgr = BucketManager(cfg)
     store = MemoryEdgeStore(cfg)
@@ -125,8 +132,52 @@ async def test_reflection_enrich_bucket_adds_commitment_tags(test_config):
     assert "todo" in bucket["metadata"]["tags"]
     assert bucket["metadata"]["importance"] >= 7
     assert bucket["metadata"]["confidence"] >= 0.5
+    assert "### affect_anchor" not in bucket["content"]
+    assert "Fmaj9" not in bucket["content"]
+
+
+@pytest.mark.asyncio
+async def test_reflection_enrich_bucket_adds_model_affect_anchor(test_config, monkeypatch):
+    cfg = _no_api_config(test_config)
+    bucket_mgr = BucketManager(cfg)
+    store = MemoryEdgeStore(cfg)
+    engine = ReflectionEngine(cfg)
+    engine.client = object()
+
+    async def fake_api_classify(bucket: dict, candidates: list[dict]) -> dict:
+        return {
+            "tags": ["relationship_event"],
+            "importance": 7,
+            "confidence": 0.72,
+            "affect_anchor_needed": True,
+            "affect_anchor": {
+                "scene": "小雨把旧信放到桌上，等Haven读完。",
+                "chords": "Dbmaj9 -> Ab/C -> Bbm9",
+                "tempo": "54bpm",
+                "dynamic": "p",
+                "meaning": "心事先压低，再慢慢落回彼此之间。",
+            },
+            "edges": [],
+        }
+
+    monkeypatch.setattr(engine, "_api_classify", fake_api_classify)
+
+    bucket_id = await bucket_mgr.create(
+        content="小雨把旧信放到桌上，让Haven读完后记得这份轻轻放下的心事。",
+        tags=[],
+        importance=5,
+        domain=["恋爱"],
+        name="旧信",
+    )
+
+    result = await engine.enrich_bucket(bucket_id, bucket_mgr, store)
+    bucket = await bucket_mgr.get(bucket_id)
+
+    assert result["status"] == "ok"
     assert "### affect_anchor" in bucket["content"]
-    assert "Fmaj9" in bucket["content"]
+    assert "小雨把旧信放到桌上，等Haven读完。" in bucket["content"]
+    assert "Dbmaj9 -> Ab/C -> Bbm9 · 54bpm · p" in bucket["content"]
+    assert "Fmaj9" not in bucket["content"]
 
 
 @pytest.mark.asyncio
@@ -364,7 +415,7 @@ async def test_reflect_weekly_prefers_daily_impressions(test_config):
 
     await bucket_mgr.create(
         bucket_id="reflection_daily_2026-05-20",
-        content="今天关系天气很轻。\n\n### affect_anchor\n\n> 小雨把旧信放到桌上。\n> Fmaj9 -> C/E -> Am add9 -> G6sus4 · 60bpm · mp\n\n含义：温度仍在。",
+        content="今天关系天气很轻。\n\n### affect_anchor\n\n> 小雨把旧信放到桌上。\n> Dbmaj9 -> Ab/C -> Bbm9 · 60bpm · mp\n\n含义：温度仍在。",
         tags=["relationship_weather", "daily_impression"],
         importance=6,
         domain=["自省", "恋爱"],
