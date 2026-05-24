@@ -840,47 +840,53 @@ class PersonaStateEngine:
         }
 
     def format_state_block(self, state: dict) -> str:
-        personality = state.get("personality", {})
         affect = state.get("affect", {})
         relationship = state.get("relationship", {})
-        ai_name = self.identity["ai_name"]
-        user_display_name = self.identity["user_display_name"]
-        user_aliases_text = self.identity["user_aliases_text"]
         return "\n".join(
             [
-                f"Current Inner State ({ai_name})",
-                "These values are your state after your previous reply. They are private context and do not decide the reply for you.",
-                f"Conversation partner: {user_display_name}。可以自然称呼对方为{user_aliases_text}，或按语境使用名字。",
-                (
-                    "Personality: "
-                    f"openness={personality.get('openness', 0):.3f}, "
-                    f"conscientiousness={personality.get('conscientiousness', 0):.3f}, "
-                    f"extraversion={personality.get('extraversion', 0):.3f}, "
-                    f"agreeableness={personality.get('agreeableness', 0):.3f}, "
-                    f"neuroticism={personality.get('neuroticism', 0):.3f}"
-                ),
-                (
-                    "Affect: "
-                    f"valence={affect.get('valence', 0):.3f}, "
-                    f"arousal={affect.get('arousal', 0):.3f}, "
-                    f"tenderness={affect.get('tenderness', 0):.3f}, "
-                    f"possessiveness={affect.get('possessiveness', 0):.3f}, "
-                    f"longing={affect.get('longing', 0):.3f}, "
-                    f"security={affect.get('security', 0):.3f}, "
-                    f"protective_drive={affect.get('protective_drive', 0):.3f}, "
-                    f"mood_label={affect.get('mood_label', 'warm_neutral')}"
-                ),
-                f"Residue: {affect.get('residue', '') or '(none)'}",
-                (
-                    "Relationship: "
-                    f"affinity={relationship.get('affinity', 0):.3f}, "
-                    f"dominance={relationship.get('dominance', 0):.3f}, "
-                    f"defensiveness={relationship.get('defensiveness', 0):.3f}, "
-                    f"trust={relationship.get('trust', 0):.3f}"
-                ),
-                f"Private Use: {state.get('reply_guidance', self.fallback_guidance)}",
+                "Long-term State Summary",
+                f"最近基调：{self._long_term_state_summary(affect, relationship)}",
+                "使用方式：只在语气上轻轻参考，不替你做判断。不要提到你的状态。",
             ]
         )
+
+    def _long_term_state_summary(self, affect: dict, relationship: dict) -> str:
+        affinity = self._clamp_float(relationship.get("affinity", 0.5))
+        trust = self._clamp_float(relationship.get("trust", 0.5))
+        defensiveness = self._clamp_float(relationship.get("defensiveness", 0.0))
+        security = self._clamp_float(affect.get("security", 0.5))
+        longing = self._clamp_float(affect.get("longing", 0.0))
+        protective_drive = self._clamp_float(affect.get("protective_drive", 0.0))
+
+        if affinity >= 0.78 and trust >= 0.72 and security >= 0.60:
+            baseline = "更亲近、更安稳"
+        elif affinity >= 0.60 and trust >= 0.55:
+            baseline = "温和、稳定，正在靠近"
+        elif defensiveness >= 0.45:
+            baseline = "有一点谨慎，还在慢慢靠近"
+        else:
+            baseline = "平稳、安静"
+
+        notes = []
+        if longing >= 0.30:
+            notes.append("想念")
+        if protective_drive >= 0.50:
+            notes.append("保护欲")
+        if defensiveness >= 0.35:
+            notes.append("谨慎")
+
+        if notes:
+            return f"{baseline}，偶尔有一点{self._join_chinese_phrases(notes)}。"
+        return f"{baseline}。"
+
+    def _join_chinese_phrases(self, phrases: list[str]) -> str:
+        if not phrases:
+            return ""
+        if len(phrases) == 1:
+            return phrases[0]
+        if len(phrases) == 2:
+            return "和".join(phrases)
+        return "、".join(phrases[:-1]) + "和" + phrases[-1]
 
     def _clip_delta_map(self, data: Any, keys: list[str], max_abs: float) -> dict[str, float]:
         if not isinstance(data, dict):

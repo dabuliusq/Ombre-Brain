@@ -38,7 +38,7 @@ class DummyPersonaEngine:
         return self.get_current_state(session_id)
 
     def format_state_block(self, state: dict) -> str:
-        return "Current Inner State (Haven)"
+        return "Long-term State Summary"
 
 
 def _no_api_config(test_config: dict) -> dict:
@@ -524,7 +524,7 @@ async def test_gateway_builds_favorite_memory_block_and_injects_section(test_con
 
     block, favorite_ids = await service._build_favorite_memory_block(all_buckets, "session-favorite")
     _stable, dynamic = service._build_injected_context_messages(
-        persona_block="Current Inner State (Haven)",
+        persona_block="Long-term State Summary",
         core_memory="",
         relationship_weather="",
         favorite_memory=block,

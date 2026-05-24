@@ -34,14 +34,14 @@
 | 能力 | 说明 | 主要文件 |
 | --- | --- | --- |
 | OpenAI / Anthropic-compatible Gateway | 提供 `/v1/chat/completions`、`/v1/messages`、`/v1/models`，聊天客户端可直接接入 | `gateway.py` |
-| 自动记忆注入 | 请求转发前按策略注入 Recent Context、Recalled Memory、Related Memory；Current Inner State / Relationship Weather 按间隔出现 | `gateway.py` |
+| 自动记忆注入 | 请求转发前按策略注入 Recent Context、Recalled Memory、Related Memory；Long-term State Summary 按间隔出现 | `gateway.py` |
 | Persona State Engine | 保存 AI 回复后的全局人格、关系状态、每个 session 的短期心情 | `persona_engine.py` |
 | 召回冷却 | 按 `X-Ombre-Session-Id` 记录轮次和最近注入，避免同一条记忆反复贴脸 | `gateway_state.py` |
 | 多上游模型路由和备用 key | `gateway.upstreams` 可配置多个 OpenAI-compatible provider，按请求里的 `model` 路由；同一上游可配置多个 key，失败时自动尝试下一个 | `gateway.py`、`config.example.yaml` |
 | 工具调用和流式兼容 | 透传 `tools / tool_choice / tool_calls`，支持 SSE 流式响应，兼容部分 reasoning_content 场景 | `gateway.py` |
 | Memory Edge | 自动生成显式记忆关系边，Gateway 和 `breath()` 可补一跳相关记忆 | `memory_edges.py`、`reflection_engine.py` |
 | 长期锚点 Anchor | 介于普通浮现和 pinned/permanent 之间的长期记忆位。`anchor=true` 的普通 bucket 不混入普通权重池，`breath()` 会用独立槽位少量带出，适合经过时间验证、未来仍需要被想起的关系锚点或项目锚点 | `server.py`、`dashboard.html` |
-| Relationship Weather | 日印象保存为 `type=feel`，Gateway 按间隔单独注入 | `reflection_engine.py` |
+| Relationship Weather | 日印象保存为 `type=feel`，默认不单独注入，可在面板观察或按配置开启注入 | `reflection_engine.py` |
 | 年轮 comments | 将再次阅读某条记忆时的感受挂到源 bucket 的 `metadata.comments` 下；旧 feel 可迁移成源记忆年轮 | `bucket_manager.py`、`server.py`、`dashboard.html` |
 | whisper | 无源碎碎念/悄悄话独立保存为 `type=feel + whisper` 标签，可用 `breath(domain="whisper")` 单独读取 | `server.py` |
 | Dashboard 编辑 | 支持正文编辑、前端用户年轮写入/删除、日印象月历、Persona 面板、网络图、手动 reflect；日印象页按日期显示完整日印象，不再做情绪天气图 | `dashboard.html`、`server.py` |
@@ -115,7 +115,7 @@ memory_edges.jsonl  # 显式记忆关系边
 
 ```text
 identity.py             # prompt 和年轮作者的名字来源
-persona_engine.py       # Persona prompt、Current Inner State 文案
+persona_engine.py       # Persona prompt、Long-term State Summary 文案
 reflection_engine.py    # 日印象、日记摘记、user/AI 改写规则
 dehydrator.py           # 长内容摘记命名规则
 server.py               # MCP / Dashboard 年轮作者
@@ -383,16 +383,24 @@ Header: X-Ombre-Include-Favorite-Memory: 1
 3. Related Memory
 
 第 1 / 15 / 30 ... 个新 user turn：
-4. Current Inner State
-5. Relationship Weather
+4. Long-term State Summary
 
 默认不自动注入：
+5. Relationship Weather
 6. Core Memory
 7. `<identity.ai_name> Favorite Memory`
 ```
 
 工具调用续接轮不重新做动态召回，也不写 recalled ids 冷却，避免一次工具链路中途换记忆。
-这么改是为了让记忆更安静：当前问题相关的记忆每轮都给，状态和偏爱类内容降低频率，减少重复、过度牵引和 prompt cache 波动。
+`Long-term State Summary` 只是一小段自然语言，例如：
+
+```text
+Long-term State Summary
+最近基调：更亲近、更安稳，偶尔有一点想念和保护欲。
+使用方式：只在语气上轻轻参考，不替你做判断。不要提到你的状态。
+```
+
+这么改是为了让记忆更安静：当前问题相关的记忆每轮都给，长期状态只给自然语言摘要，不暴露数值，不替上游模型决定怎么回复。`Reply Strategy` 不再作为注入块；`Relationship Weather` 默认只作为日印象数据留在 bucket 和面板里，需要时再按配置开启。
 
 ### MCP / ChatGPT Connector
 

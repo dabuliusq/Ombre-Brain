@@ -80,8 +80,11 @@ def test_persona_initializes_default_global_and_session_state(test_config):
     assert state["relationship"]["affinity"] == pytest.approx(0.86)
     assert state["affect"]["mood_label"] == "warm_neutral"
     assert state["affect"]["tenderness"] == pytest.approx(0.62)
-    assert "Current Inner State" in engine.format_state_block(state)
-    assert "Conversation partner: 小雨" in engine.format_state_block(state)
+    state_block = engine.format_state_block(state)
+    assert "Long-term State Summary" in state_block
+    assert "最近基调：更亲近、更安稳，偶尔有一点想念和保护欲。" in state_block
+    assert "valence=" not in state_block
+    assert "affinity=" not in state_block
 
 
 def test_persona_evaluator_prompt_asks_for_chinese_persona_text():
@@ -104,8 +107,8 @@ def test_persona_identity_config_updates_prompt_and_state_block(test_config):
     block = engine.format_state_block(state)
     prompt = engine._post_reply_evaluation_prompt()
 
-    assert "Current Inner State (Echo)" in block
-    assert "Conversation partner: 米拉" in block
+    assert "Long-term State Summary" in block
+    assert "使用方式：只在语气上轻轻参考，不替你做判断。不要提到你的状态。" in block
     assert "米拉、亲爱的、她" in prompt
     assert "Echo 回复后的状态" in prompt
 
@@ -242,6 +245,7 @@ async def test_persona_dashboard_payload_lists_state_sessions_and_events(test_co
     assert payload["state"]["affect"]["residue"] == "still carrying a warm aftertaste"
     assert payload["sessions"][0]["session_id"] == "session-dashboard"
     assert payload["events"][0]["event_type"] == "affection"
+    assert payload["events"][0]["residue"] == "still carrying a warm aftertaste"
     assert payload["events"][0]["affect_delta"]["valence"] == pytest.approx(0.05)
     assert payload["config"]["model"] == "deepseek-chat"
 

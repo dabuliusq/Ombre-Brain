@@ -87,12 +87,9 @@ class DummyPersonaEngine:
 
     def format_state_block(self, state: dict) -> str:
         return (
-            "Current Inner State\n"
-            "Personality: openness=0.560, conscientiousness=0.500, extraversion=0.440, "
-            "agreeableness=0.660, neuroticism=0.360\n"
-            "Affect: valence=0.620, arousal=0.400, mood_label=warm_attentive\n"
-            "Relationship: affinity=0.860, dominance=0.380, defensiveness=0.120, trust=0.820\n"
-            "Reply Guidance: Be warm and steady."
+            "Long-term State Summary\n"
+            "最近基调：更亲近、更安稳，偶尔有一点想念和保护欲。\n"
+            "使用方式：只在语气上轻轻参考，不替你做判断。不要提到你的状态。"
         )
 
 
@@ -313,7 +310,7 @@ def test_gateway_accepts_anthropic_messages(monkeypatch, test_config, bucket_mgr
     assert forwarded["stream"] is False
     assert forwarded["messages"][0] == {"role": "system", "content": "你是一个自然聊天助手。"}
     assert forwarded["messages"][1]["role"] == "user"
-    assert "Current Inner State" in forwarded["messages"][1]["content"]
+    assert "Long-term State Summary" in forwarded["messages"][1]["content"]
     assert "Core Memory" not in forwarded["messages"][1]["content"]
     assert forwarded["messages"][1]["content"].endswith("今天怎么样？")
     assert state_store.get_recent_bucket_ids("sess-anthropic", 5) == set()
@@ -340,7 +337,7 @@ def test_gateway_defaults_anthropic_session_id(monkeypatch, test_config, bucket_
     assert response.status_code == 200
     last_message = captured[0]["json"]["messages"][-1]
     assert last_message["role"] == "user"
-    assert "Current Inner State" in last_message["content"]
+    assert "Long-term State Summary" in last_message["content"]
     assert last_message["content"].endswith("你好")
     assert state_store.get_recent_bucket_ids("xiaoyu-main", 5) == set()
 
@@ -1793,7 +1790,9 @@ def test_gateway_injects_after_existing_system_message(monkeypatch, test_config,
 
     dynamic = forwarded["messages"][1]["content"]
     assert "Core Memory" not in dynamic
-    assert "Current Inner State" in dynamic
+    assert "Long-term State Summary" in dynamic
+    assert "valence=" not in dynamic
+    assert "affinity=" not in dynamic
     assert "Recent Context" in dynamic
     assert "Recalled Memory" in dynamic
     assert "核心准则" not in dynamic
@@ -1855,7 +1854,7 @@ def test_gateway_injects_when_no_system_message(monkeypatch, test_config, bucket
     assert response.status_code == 200
     messages = captured[0]["json"]["messages"]
     assert messages[0]["role"] == "user"
-    assert "Current Inner State" in messages[0]["content"]
+    assert "Long-term State Summary" in messages[0]["content"]
     assert "Core Memory" not in messages[0]["content"]
     assert messages[0]["content"].endswith("今天怎么样")
 

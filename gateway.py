@@ -100,7 +100,7 @@ class GatewayService:
             0, int(self.gateway_cfg.get("current_inner_state_interval_rounds", 15))
         )
         self.relationship_weather_interval_rounds = max(
-            0, int(self.gateway_cfg.get("relationship_weather_interval_rounds", 15))
+            0, int(self.gateway_cfg.get("relationship_weather_interval_rounds", 0))
         )
         self.favorite_memory_interval_rounds = max(
             0, int(self.gateway_cfg.get("favorite_memory_interval_rounds", 0))

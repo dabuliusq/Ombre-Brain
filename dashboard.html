@@ -796,6 +796,10 @@
     color: var(--text-light);
     margin-top: 4px;
   }
+  .persona-event-residue {
+    margin-top: 6px;
+    color: var(--text-dim);
+  }
   .persona-event-time {
     color: var(--text-light);
     font-size: 11px;
@@ -2273,8 +2277,7 @@ function renderPersona(data) {
           '</div>' +
         '</div>' +
         '<div>' +
-          '<div class="persona-guidance">' + esc(state.reply_guidance || '保持稳定、温和、低压，不主动放大情绪。') + '</div>' +
-          '<div class="persona-guidance">' + esc((affect && affect.residue) || 'residue: none') + '</div>' +
+          '<div class="persona-guidance">' + esc((affect && affect.residue) || '当前没有明显余味。') + '</div>' +
           '<div class="persona-status-line">' +
             '<span class="persona-pill">' + (cfg.enabled ? 'engine on' : 'engine paused') + '</span>' +
             '<span class="persona-pill">' + (cfg.api_ready ? 'LLM ready' : 'fallback state') + '</span>' +
@@ -2341,10 +2344,12 @@ function renderPersonaEvents(events) {
   }
   return '<div class="persona-event-list">' + events.map(function(ev) {
     var intent = ev.perceived_intent || ev.error || 'no intent recorded';
+    var residue = ev.residue ? '<div class="persona-event-residue">' + esc(ev.residue) + '</div>' : '';
     return '<div class="persona-event">' +
       '<div class="persona-event-type">' + esc(ev.event_type || 'unknown') + '</div>' +
       '<div class="persona-event-main">' +
         esc(intent) +
+        residue +
         '<small>' + esc(ev.mood_label || 'mood unset') + ' · confidence ' + personaNumber(ev.confidence) + ' · #' + esc(ev.message_hash || '') + '</small>' +
         renderPersonaDeltas(ev) +
       '</div>' +
