@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import secrets
 import json
 import codecs
@@ -30,6 +31,29 @@ from utils import count_tokens_approx, load_config, setup_logging, strip_wikilin
 logger = logging.getLogger("ombre_brain.gateway")
 FAVORITE_MEMORY_MARKER = "[[ombre:favorite]]"
 RETRYABLE_UPSTREAM_STATUS_CODES = {401, 403, 429, 500, 502, 503, 504}
+EXTERNAL_CONTEXT_ATTACHMENT_RE = re.compile(
+    r"<attachment\b[^>]*>[\s\S]*?</attachment>",
+    re.IGNORECASE,
+)
+SELF_CLOSING_ATTACHMENT_RE = re.compile(
+    r"<attachment\b[^>]*/>",
+    re.IGNORECASE,
+)
+WORKSPACE_ATTACHMENT_RE = re.compile(
+    r"<workspace_attachment>[\s\S]*?</workspace_attachment>",
+    re.IGNORECASE,
+)
+EXTERNAL_CONTEXT_BLOCK_TITLES = {
+    "当前时间",
+    "当前电量",
+    "当前天气",
+    "当前位置",
+    "当前屏幕应用",
+    "应用使用时长",
+    "最近通知",
+    "相关记忆",
+    "屏幕文本",
+}
 
 
 class GatewayService:
@@ -1595,7 +1619,10 @@ class GatewayService:
             if role != "user":
                 return ""
             content = self._coerce_message_text(message.get("content"))
-            return content.strip()
+            cleaned = self._strip_external_context_from_user_text(content)
+            if cleaned:
+                return cleaned
+            continue
         return ""
 
     def _coerce_message_text(self, content: Any) -> str:
@@ -1613,6 +1640,28 @@ class GatewayService:
                         chunks.append(str(text))
             return "\n".join(chunks)
         return ""
+
+    def _strip_external_context_from_user_text(self, text: str) -> str:
+        cleaned = WORKSPACE_ATTACHMENT_RE.sub("", str(text or ""))
+        cleaned = EXTERNAL_CONTEXT_ATTACHMENT_RE.sub("", cleaned)
+        cleaned = SELF_CLOSING_ATTACHMENT_RE.sub("", cleaned)
+        return self._strip_external_context_blocks(cleaned)
+
+    def _strip_external_context_blocks(self, text: str) -> str:
+        kept: list[str] = []
+        skipping = False
+        for line in str(text or "").splitlines():
+            stripped = line.strip()
+            title = ""
+            if stripped.startswith("【") and "】" in stripped:
+                title = stripped[1 : stripped.index("】")].strip()
+            if title:
+                skipping = title in EXTERNAL_CONTEXT_BLOCK_TITLES
+                if skipping:
+                    continue
+            if not skipping:
+                kept.append(line)
+        return "\n".join(kept).strip()
 
     def _summarize_messages_for_debug(self, messages: Any) -> list[dict[str, Any]] | str:
         if not isinstance(messages, list):
@@ -2208,7 +2257,10 @@ class GatewayService:
             if role == "system":
                 continue
             if role == "user":
-                return index
+                content = self._coerce_message_text(message.get("content"))
+                if self._strip_external_context_from_user_text(content):
+                    return index
+                continue
             return None
         return None
 

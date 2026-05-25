@@ -1946,6 +1946,123 @@ def test_gateway_injects_when_no_system_message(monkeypatch, test_config, bucket
     assert messages[0]["content"].endswith("今天怎么样")
 
 
+def test_gateway_uses_user_text_before_operit_extra_attachment_for_recall(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cat_id = _create_bucket(
+        bucket_mgr,
+        content="小橘昨晚把玩具叼到床边，等小雨夸她。",
+        name="小橘床边玩具",
+        hours_ago=24,
+    )
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(cat_id, 0.96)],
+    )
+    operit_extra = (
+        ' <attachment id="message_insert_extra_bundle_177757652229" '
+        'filename="Time:02:58 01/2026/6" type="text/plain" size="104">'
+        "【当前时间】\n2026-06-01 02:58:42 时区: Asia/Shanghai\n\n"
+        "【相关记忆】 查询: 猫咪最近又干了什么？\n"
+        "快照: - 上限: 3 命中数量: 0 当前没有命中的记忆"
+        "</attachment>"
+        "<workspace_attachment><workspace_context>工作区结构无变化。</workspace_context></workspace_attachment>"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-operit-extra",
+            },
+            json={"messages": [{"role": "user", "content": "猫咪最近又干了什么？" + operit_extra}]},
+        )
+
+    assert response.status_code == 200
+    content = captured[0]["json"]["messages"][0]["content"]
+    assert "Recalled Memory" in content
+    assert "小橘床边玩具" in content
+    assert "message_insert_extra_bundle_177757652229" in content
+    assert content.endswith("猫咪最近又干了什么？" + operit_extra)
+
+
+def test_gateway_skips_pure_operit_extra_user_when_finding_current_turn(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cat_id = _create_bucket(
+        bucket_mgr,
+        content="小橘把猫抓板推到门口，像是在提醒小雨看她。",
+        name="门口猫抓板",
+        hours_ago=24,
+    )
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(cat_id, 0.96)],
+    )
+    operit_extra = (
+        '<attachment id="message_insert_extra_bundle_177757652230" '
+        'filename="Time:03:00 01/2026/6" type="text/plain" size="80">'
+        "【当前时间】\n2026-06-01 03:00:00\n"
+        "</attachment>"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-operit-pure-extra",
+            },
+            json={
+                "messages": [
+                    {"role": "user", "content": "猫咪最近又干了什么？"},
+                    {"role": "user", "content": operit_extra},
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    messages = captured[0]["json"]["messages"]
+    assert "Recalled Memory" in messages[0]["content"]
+    assert "门口猫抓板" in messages[0]["content"]
+    assert messages[0]["content"].endswith("猫咪最近又干了什么？")
+    assert messages[1]["content"] == operit_extra
+
+
+def test_gateway_strips_attachment_tags_only_for_recall_query(monkeypatch, test_config, bucket_mgr):
+    _, service, _, _ = _build_service(monkeypatch, _gateway_config(test_config), bucket_mgr)
+
+    assert (
+        service._strip_external_context_from_user_text(
+            '看看这个 <attachment id="img_1" filename="cat.jpg" type="image/jpeg" size="100"></attachment>'
+        )
+        == "看看这个"
+    )
+    assert (
+        service._strip_external_context_from_user_text(
+            '看这份文件 <attachment id="file_1" filename="note.txt" type="text/plain" content="hello" />'
+        )
+        == "看这份文件"
+    )
+
+
 def test_favorite_memory_is_not_injected_by_default(monkeypatch, test_config, bucket_mgr):
     _create_bucket(
         bucket_mgr,
