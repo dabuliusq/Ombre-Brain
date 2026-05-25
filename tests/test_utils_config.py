@@ -5,6 +5,8 @@ def test_load_config_defaults_relationship_weather_off(tmp_path):
     config = load_config(str(tmp_path / "missing-config.yaml"))
 
     assert config["gateway"]["relationship_weather_interval_rounds"] == 0
+    assert config["gateway"]["cooldown_hours"] == 6
+    assert config["gateway"]["skip_recent_rounds"] == 5
 
 
 def test_load_config_reads_runtime_config_before_env_override(tmp_path, monkeypatch):

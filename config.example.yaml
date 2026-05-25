@@ -167,7 +167,7 @@ gateway:
   dynamic_top_k: 10
   inject_max_cards: 2
   skip_recent_rounds: 5
-  cooldown_hours: 48
+  cooldown_hours: 6
   cooldown_floor: 0.3
   inject_total_budget: 1200
   core_memory_budget: 0

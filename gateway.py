@@ -81,7 +81,7 @@ class GatewayService:
         self.dynamic_top_k = int(self.gateway_cfg.get("dynamic_top_k", 10))
         self.inject_max_cards = max(0, min(2, int(self.gateway_cfg.get("inject_max_cards", 2))))
         self.skip_recent_rounds = max(0, int(self.gateway_cfg.get("skip_recent_rounds", 5)))
-        self.cooldown_hours = float(self.gateway_cfg.get("cooldown_hours", 48))
+        self.cooldown_hours = float(self.gateway_cfg.get("cooldown_hours", 6))
         self.cooldown_floor = float(self.gateway_cfg.get("cooldown_floor", 0.3))
 
         self.inject_total_budget = int(self.gateway_cfg.get("inject_total_budget", 1200))

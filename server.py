@@ -2943,6 +2943,7 @@ async def api_config_get(request):
 
     dehy = config.get("dehydration", {})
     emb = config.get("embedding", {})
+    gateway_cfg = config.get("gateway", {}) if isinstance(config.get("gateway", {}), dict) else {}
     dream_cfg = config.get("dream", {}) if isinstance(config.get("dream", {}), dict) else {}
     return JSONResponse({
         "dehydration": {
@@ -2959,6 +2960,10 @@ async def api_config_get(request):
             "api_key_masked": _mask_key(emb.get("api_key", "")),
             "effective_base_url": embedding_engine.base_url,
             "has_own_api_key": bool(emb.get("api_key", "")),
+        },
+        "gateway": {
+            "cooldown_hours": gateway_cfg.get("cooldown_hours", 6),
+            "skip_recent_rounds": gateway_cfg.get("skip_recent_rounds", 5),
         },
         "dream": {
             "enabled": dream_cfg.get("enabled", True),
@@ -3062,6 +3067,17 @@ async def api_config_update(request):
         config["merge_threshold"] = int(body["merge_threshold"])
         updated.append("merge_threshold")
 
+    # --- Gateway memory surfacing config ---
+    if "gateway" in body:
+        g = body["gateway"]
+        gateway_cfg = config.setdefault("gateway", {})
+        if "cooldown_hours" in g:
+            gateway_cfg["cooldown_hours"] = max(0.0, float(g["cooldown_hours"]))
+            updated.append("gateway.cooldown_hours")
+        if "skip_recent_rounds" in g:
+            gateway_cfg["skip_recent_rounds"] = max(0, int(g["skip_recent_rounds"]))
+            updated.append("gateway.skip_recent_rounds")
+
     # --- Dream config ---
     if "dream" in body:
         d = body["dream"]
@@ -3117,6 +3133,13 @@ async def api_config_update(request):
 
             if "merge_threshold" in body:
                 save_config["merge_threshold"] = int(body["merge_threshold"])
+
+            if "gateway" in body:
+                sc_gateway = save_config.setdefault("gateway", {})
+                if "cooldown_hours" in body["gateway"]:
+                    sc_gateway["cooldown_hours"] = max(0.0, float(body["gateway"]["cooldown_hours"]))
+                if "skip_recent_rounds" in body["gateway"]:
+                    sc_gateway["skip_recent_rounds"] = max(0, int(body["gateway"]["skip_recent_rounds"]))
 
             if "dream" in body:
                 sc_dream = save_config.setdefault("dream", {})

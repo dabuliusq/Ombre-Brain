@@ -24,3 +24,15 @@ def test_dashboard_comment_enter_submit_has_no_visible_send_key():
     assert "handleCommentKeydown(event)" in form_block
     assert "comment-send-button" not in html
     assert 'aria-label="发送"' not in form_block
+
+
+def test_dashboard_exposes_gateway_memory_cooldown_settings():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+
+    assert "<h3>记忆浮现</h3>" in html
+    assert 'id="cfg-gateway-cooldown"' in html
+    assert 'id="cfg-gateway-rounds"' in html
+    assert "cfg.gateway.cooldown_hours" in html
+    assert "cfg.gateway.skip_recent_rounds" in html
+    assert "cooldown_hours: floatValue('cfg-gateway-cooldown', 6)" in html
+    assert "skip_recent_rounds: numberValue('cfg-gateway-rounds', 5)" in html

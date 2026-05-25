@@ -239,15 +239,15 @@ def test_gateway_state_store_cooldown_curve(tmp_path):
     store.record_success("sess-a", ["bucket-a"], completed_at=origin)
 
     assert store.get_recent_bucket_ids("sess-a", 5) == {"bucket-a"}
-    assert store.get_cooldown_multiplier("sess-a", "bucket-a", 48, 0.3, now=origin) == pytest.approx(0.3)
+    assert store.get_cooldown_multiplier("sess-a", "bucket-a", 6, 0.3, now=origin) == pytest.approx(0.3)
     assert store.get_cooldown_multiplier(
-        "sess-a", "bucket-a", 48, 0.3, now=origin + timedelta(hours=12)
+        "sess-a", "bucket-a", 6, 0.3, now=origin + timedelta(hours=1.5)
     ) == pytest.approx(0.475, rel=1e-3)
     assert store.get_cooldown_multiplier(
-        "sess-a", "bucket-a", 48, 0.3, now=origin + timedelta(hours=24)
+        "sess-a", "bucket-a", 6, 0.3, now=origin + timedelta(hours=3)
     ) == pytest.approx(0.65, rel=1e-3)
     assert store.get_cooldown_multiplier(
-        "sess-a", "bucket-a", 48, 0.3, now=origin + timedelta(hours=48)
+        "sess-a", "bucket-a", 6, 0.3, now=origin + timedelta(hours=6)
     ) == pytest.approx(1.0)
 
 
