@@ -12,7 +12,7 @@ ombre_compose_file() {
     printf '%s\n' "${COMPOSE_FILE}"
     return
   fi
-  for candidate in compose.hk.yml docker-compose.user.yml docker-compose.yml; do
+  for candidate in compose.local.yml compose.hk.yml docker-compose.user.yml docker-compose.yml; do
     if [[ -f "${candidate}" ]]; then
       printf '%s\n' "${candidate}"
       return

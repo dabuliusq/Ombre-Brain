@@ -907,13 +907,21 @@ source=deleted
 
 这些脚本默认在仓库根目录运行。VPS/Linux 直接用 `bash`；Windows 本地测试可用 Git Bash。常用环境变量：
 
-- `COMPOSE_FILE`：指定 compose 文件，VPS 常用 `compose.hk.yml`，普通用户部署常用 `docker-compose.user.yml`。不填时会按 `compose.hk.yml` → `docker-compose.user.yml` → `docker-compose.yml` 自动找。
+- `COMPOSE_FILE`：指定 compose 文件。`one_click.sh` 首次部署会生成 `compose.local.yml`；VPS 旧部署常用 `compose.hk.yml`。不填时会按 `compose.local.yml` → `compose.hk.yml` → `docker-compose.user.yml` → `docker-compose.yml` 自动找。
 - `OMBRE_SERVICE`：容器服务名，默认 `ombre-brain`。
+- `GATEWAY_SERVICE`：Gateway 容器服务名，默认 `ombre-gateway`。
 - `BATCH_SIZE`：embedding 每批处理数量，默认 `20`。
 - `HEALTH_URL`：健康检查地址，不填时 `compose.hk.yml` 默认查 `http://127.0.0.1:18001/health`，用户版 compose 默认查 `http://127.0.0.1:8000/health`。
+- `LOG_TAIL`：`doctor.sh` 查看最近日志的行数，默认 `160`。
 - `YES=1`：跳过重建 embedding 的确认提示；清理孤儿 embedding 仍建议手动确认。
 
 ```bash
+# 一键菜单：首次部署、更新、排障、embedding 维护
+bash scripts/one_click.sh
+
+# 一键排障：检查 key、服务、端口、健康接口和最近错误日志
+COMPOSE_FILE=compose.hk.yml bash scripts/doctor.sh
+
 # 一键更新：拉代码、重建/更新容器、健康检查
 COMPOSE_FILE=compose.hk.yml bash scripts/update_deploy.sh
 
@@ -948,10 +956,26 @@ docker compose -f compose.hk.yml exec -T ombre-brain python scripts/cleanup_migr
 
 脚本用途：
 
+- `scripts/one_click.sh`：新手入口。菜单包含首次部署、更新版本、错误排查和 embedding 维护；首次部署会引导填写模型配置和 key，key 写入 `.env`，非密钥配置写入 `config.yaml`，并生成本机专用的 `compose.local.yml`。
+- `scripts/doctor.sh`：适合“更新后不能用、端口不通、怀疑 key 没配好”。它只读检查，不会重启服务、不改配置、不打印 key。会提示 `.env/config.yaml`、Docker Compose 状态、健康接口、容器内环境变量和最近错误日志。
 - `scripts/update_deploy.sh`：适合“我只想更新到最新版”。它会 `git pull --ff-only`，如果 compose 里是 `build:` 就重建镜像，否则先 pull 镜像，再启动容器，最后做健康检查。
 - `scripts/embedding_backfill.sh`：只补缺失的 embedding，适合升级后发现部分记忆没有语义召回。
 - `scripts/embedding_rebuild.sh`：重建全部 embedding，适合 embedding 模型、base_url 或 embedding 文本格式改过之后使用。它会消耗更多 API 次数。
 - `scripts/embedding_cleanup_orphans.sh`：检查 `embeddings.db` 里已经没有对应 bucket 文件的记录，并要求输入确认后删除。
+
+`doctor.sh` 常见结论：
+
+- `OMBRE_API_KEY 未配置`：导入抽取/脱水模型大概率不能调用。把 key 写进 `.env` 后重新 `docker compose up -d`。
+- `OMBRE_EMBEDDING_API_KEY 未配置`：embedding 可能回退到脱水 key；如果你的 embedding 服务和脱水服务不是同一个站点，请单独配置。
+- `服务没有运行`：先执行 `COMPOSE_FILE=compose.hk.yml bash scripts/update_deploy.sh`。
+- `默认健康地址不通，但其它端口通`：客户端或反代地址可能写错，按脚本提示的可用端口改配置。
+- `401/403`：通常是 key 或鉴权 token 错；`429` 是额度/频率限制；`connection refused/timeout` 多半是上游地址或网络问题。
+
+`one_click.sh` 的 Gateway 上游配置支持：
+
+- 单上游或多上游 provider。
+- 每个 provider 可选单 key 或多 key，多 key 会写成 `api_key_envs`。
+- 如果多个 provider 暴露了同名模型，脚本会自动把 Gateway 里显示的模型名改成 `provider/模型名`，同时保留 `upstream_model` 指向真实模型名，避免路由撞名。
 
 ## 本地开发与测试
 
