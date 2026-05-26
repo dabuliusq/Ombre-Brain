@@ -39,13 +39,40 @@ def load_existing_mapping(path: Path) -> dict[str, dict]:
     return result
 
 
-def mapping_from_choice(plan: dict, source_bucket_id: str) -> dict:
+def mapping_from_choice(plan: dict, action: str, source_bucket_id: str = "") -> dict:
     candidates = plan.get("candidates") or []
     top = candidates[0] if candidates else {}
+    if action == "whisper":
+        return {
+            "feel_id": plan.get("feel_id", ""),
+            "action": "whisper",
+            "source_bucket_id": "",
+            "suggested_source_bucket_id": top.get("bucket_id", ""),
+            "suggested_source_name": top.get("name", ""),
+            "chosen_source_name": "",
+            "confidence": "source_less",
+            "score": 0,
+            "common_keywords": [],
+            "note": "keep_as_whisper",
+        }
+    if action == "skip":
+        return {
+            "feel_id": plan.get("feel_id", ""),
+            "action": "skip",
+            "source_bucket_id": "",
+            "suggested_source_bucket_id": top.get("bucket_id", ""),
+            "suggested_source_name": top.get("name", ""),
+            "chosen_source_name": "",
+            "confidence": top.get("confidence", ""),
+            "score": top.get("score", 0),
+            "common_keywords": top.get("common_keywords", []),
+            "note": "skipped",
+        }
     chosen = next((item for item in candidates if item.get("bucket_id") == source_bucket_id), None)
     if source_bucket_id and not chosen:
         return {
             "feel_id": plan.get("feel_id", ""),
+            "action": "comment",
             "source_bucket_id": source_bucket_id,
             "suggested_source_bucket_id": top.get("bucket_id", ""),
             "suggested_source_name": top.get("name", ""),
@@ -58,6 +85,7 @@ def mapping_from_choice(plan: dict, source_bucket_id: str) -> dict:
     chosen = chosen or top
     return {
         "feel_id": plan.get("feel_id", ""),
+        "action": "comment" if source_bucket_id else "skip",
         "source_bucket_id": source_bucket_id,
         "suggested_source_bucket_id": top.get("bucket_id", ""),
         "suggested_source_name": top.get("name", ""),
@@ -75,8 +103,11 @@ def print_plan(index: int, total: int, plan: dict, existing: dict | None) -> Non
     print(f"feel_id: {plan.get('feel_id', '')}")
     print(f"created: {plan.get('feel_created', '')}")
     print(f"preview: {short(plan.get('feel_preview'))}")
-    if existing and existing.get("source_bucket_id"):
-        print(f"已有确认: {existing.get('source_bucket_id')}")
+    if existing:
+        if existing.get("action") == "whisper":
+            print("已有确认: 保留为 whisper/无源 feel")
+        elif existing.get("source_bucket_id"):
+            print(f"已有确认: {existing.get('source_bucket_id')}")
 
     candidates = plan.get("candidates") or []
     if not candidates:
@@ -96,32 +127,37 @@ def print_plan(index: int, total: int, plan: dict, existing: dict | None) -> Non
         print(f"   preview: {short(candidate.get('preview'), 120)}")
 
 
-def ask_choice(plan: dict, existing: dict | None) -> str:
+def ask_choice(plan: dict, existing: dict | None) -> tuple[str, str]:
     candidates = plan.get("candidates") or []
     while True:
         if candidates:
-            prompt = "输入 y 接受第 1 个候选，1-3 选择候选，n 手动输入 bucket_id，s 跳过，q 退出"
+            prompt = "输入 y 接受第 1 个候选，1-3 选择候选，n 手动输入 bucket_id，w 保留为 whisper，s 跳过，q 退出"
         else:
-            prompt = "输入 n 手动输入 bucket_id，s 跳过，q 退出"
-        if existing and existing.get("source_bucket_id"):
+            prompt = "输入 n 手动输入 bucket_id，w 保留为 whisper，s 跳过，q 退出"
+        if existing and (existing.get("source_bucket_id") or existing.get("action") == "whisper"):
             prompt += "，回车保留已有"
         answer = input(f"{prompt}: ").strip()
 
-        if not answer and existing and existing.get("source_bucket_id"):
-            return str(existing["source_bucket_id"]).strip()
+        if not answer and existing:
+            if existing.get("action") == "whisper":
+                return "whisper", ""
+            if existing.get("source_bucket_id"):
+                return "comment", str(existing["source_bucket_id"]).strip()
         if answer.lower() == "q":
             raise KeyboardInterrupt
         if answer.lower() == "s":
-            return ""
+            return "skip", ""
+        if answer.lower() == "w":
+            return "whisper", ""
         if answer.lower() == "y" and candidates:
-            return str(candidates[0].get("bucket_id") or "").strip()
+            return "comment", str(candidates[0].get("bucket_id") or "").strip()
         if answer.isdigit() and candidates:
             idx = int(answer)
             if 1 <= idx <= len(candidates):
-                return str(candidates[idx - 1].get("bucket_id") or "").strip()
+                return "comment", str(candidates[idx - 1].get("bucket_id") or "").strip()
         if answer.lower() == "n":
             manual = input("请输入源记忆 bucket_id（空=跳过）: ").strip()
-            return manual
+            return ("comment", manual) if manual else ("skip", "")
         print("没看懂输入，再来一次。")
 
 
@@ -153,9 +189,9 @@ def main() -> None:
             feel_id = str(plan.get("feel_id") or "").strip()
             existing = existing_by_feel.get(feel_id)
             print_plan(index, total, plan, existing)
-            source_bucket_id = ask_choice(plan, existing)
-            mappings.append(mapping_from_choice(plan, source_bucket_id))
-    except KeyboardInterrupt:
+            action, source_bucket_id = ask_choice(plan, existing)
+            mappings.append(mapping_from_choice(plan, action, source_bucket_id))
+    except (KeyboardInterrupt, EOFError):
         print("\n已提前退出，保留已确认的条目。")
 
     mapping_path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,8 +199,9 @@ def main() -> None:
         json.dump({"mappings": mappings}, f, ensure_ascii=False, indent=2)
 
     confirmed = sum(1 for item in mappings if item.get("source_bucket_id"))
-    skipped = len(mappings) - confirmed
-    print(f"\n完成：确认 {confirmed} 条，跳过 {skipped} 条。")
+    whispers = sum(1 for item in mappings if item.get("action") == "whisper")
+    skipped = len(mappings) - confirmed - whispers
+    print(f"\n完成：确认年轮 {confirmed} 条，保留 whisper {whispers} 条，跳过 {skipped} 条。")
     print(f"已写入：{mapping_path}")
 
 

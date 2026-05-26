@@ -44,14 +44,19 @@ def load_mappings(path: str) -> list[dict]:
         if not isinstance(item, dict):
             continue
         feel_id = str(item.get("feel_id") or "").strip()
+        action = str(item.get("action") or "comment").strip().lower()
         source_id = str(
             item.get("source_bucket_id")
             or item.get("source_id")
             or item.get("bucket_id")
             or ""
         ).strip()
-        if feel_id and source_id:
-            mappings.append({"feel_id": feel_id, "source_bucket_id": source_id})
+        if not feel_id:
+            continue
+        if action == "whisper":
+            mappings.append({"feel_id": feel_id, "source_bucket_id": "", "action": "whisper"})
+        elif source_id:
+            mappings.append({"feel_id": feel_id, "source_bucket_id": source_id, "action": "comment"})
     return mappings
 
 
@@ -103,23 +108,19 @@ async def build_actions(mgr: BucketManager, mappings: list[dict]) -> tuple[list[
     seen_pairs = set()
     for mapping in mappings:
         feel_id = mapping["feel_id"]
-        source_id = mapping["source_bucket_id"]
-        pair = (feel_id, source_id)
+        action_type = str(mapping.get("action") or "comment")
+        source_id = mapping.get("source_bucket_id", "")
+        pair = (feel_id, action_type, source_id)
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
 
         feel = await mgr.get(feel_id)
-        source = await mgr.get(source_id)
         if not feel:
             errors.append({"feel_id": feel_id, "source_bucket_id": source_id, "error": "feel_not_found"})
             continue
-        if not source:
-            errors.append({"feel_id": feel_id, "source_bucket_id": source_id, "error": "source_not_found"})
-            continue
 
         feel_meta = feel.get("metadata", {})
-        source_meta = source.get("metadata", {})
         feel_tags = {str(tag) for tag in feel_meta.get("tags", []) or []}
         if feel_meta.get("type") != "feel":
             errors.append({"feel_id": feel_id, "source_bucket_id": source_id, "error": "not_a_feel"})
@@ -127,6 +128,28 @@ async def build_actions(mgr: BucketManager, mappings: list[dict]) -> tuple[list[
         if feel_tags & RELATIONSHIP_WEATHER_TAGS:
             errors.append({"feel_id": feel_id, "source_bucket_id": source_id, "error": "relationship_weather_feel"})
             continue
+
+        if action_type == "whisper":
+            actions.append(
+                {
+                    "action": "whisper",
+                    "feel_id": feel_id,
+                    "feel_path": feel.get("path"),
+                    "feel_name": feel_meta.get("name", feel_id),
+                    "feel_created": feel_meta.get("created"),
+                    "feel_last_active": feel_meta.get("last_active"),
+                    "content": feel.get("content", ""),
+                    "tags": sorted(feel_tags),
+                }
+            )
+            continue
+
+        source = await mgr.get(source_id)
+        if not source:
+            errors.append({"feel_id": feel_id, "source_bucket_id": source_id, "error": "source_not_found"})
+            continue
+
+        source_meta = source.get("metadata", {})
         if source_meta.get("type") == "feel":
             errors.append({"feel_id": feel_id, "source_bucket_id": source_id, "error": "source_is_feel"})
             continue
@@ -147,6 +170,7 @@ async def build_actions(mgr: BucketManager, mappings: list[dict]) -> tuple[list[
 
         actions.append(
             {
+                "action": "comment",
                 "feel_id": feel_id,
                 "source_bucket_id": source_id,
                 "feel_path": feel.get("path"),
@@ -191,6 +215,36 @@ async def apply_actions(
             backups.append(backup_file(action["source_path"], backup_dir))
         if action.get("feel_path"):
             backups.append(backup_file(action["feel_path"], backup_dir))
+
+        if action.get("action") == "whisper":
+            tags = list(action.get("tags") or [])
+            if "whisper" not in tags:
+                tags.append("whisper")
+            updated = await mgr.update(
+                action["feel_id"],
+                tags=tags,
+                source="feel_whisper_migration",
+                last_active=action.get("feel_last_active"),
+            )
+            embedding_refreshed = False
+            if updated and refresh_embeddings and embedding_engine and getattr(embedding_engine, "enabled", False):
+                feel = await mgr.get(action["feel_id"])
+                if feel:
+                    embedding_refreshed = await embedding_engine.generate_and_store(
+                        action["feel_id"],
+                        bucket_text_for_embedding(feel),
+                    )
+            record.update(
+                {
+                    "status": "whisper_tagged" if updated else "failed",
+                    "embedding_refreshed": embedding_refreshed,
+                    "backups": backups,
+                }
+            )
+            if not updated:
+                record["error"] = "whisper_update_failed"
+            results.append(record)
+            continue
 
         entry = await mgr.add_comment(
             action["source_bucket_id"],

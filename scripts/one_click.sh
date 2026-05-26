@@ -1221,7 +1221,7 @@ migration_review_feels_interactive() {
   mapping="$(migration_mapping_path)"
   plan_json="${state_dir}/feel_comment_backfill_plan.json"
   printf '接下来会逐条列出旧 feel 和候选源记忆。\n'
-  printf '输入 y 接受第 1 个候选；输入 n 可自己填源记忆 bucket_id。\n'
+  printf '输入 y 接受第 1 个候选；输入 n 可自己填源记忆 bucket_id；输入 w 保留为 whisper。\n'
   run_target_shell "PYTHONIOENCODING=utf-8 python scripts/review_feel_comment_backfill.py --plan '${plan_json}' --mapping '${mapping}'" || return 1
   printf '已更新 mapping：%s\n' "${mapping}"
 }
