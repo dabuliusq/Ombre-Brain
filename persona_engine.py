@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -87,6 +88,24 @@ class PersonaStateEngine:
         self.max_personality_delta = float(self.persona_cfg.get("max_personality_delta", 0.01))
         self.max_relationship_delta = float(self.persona_cfg.get("max_relationship_delta", 0.03))
         self.max_affect_delta = float(self.persona_cfg.get("max_affect_delta", 0.18))
+        self.event_batch_size = max(1, int(self.persona_cfg.get("event_batch_size", 2)))
+        self.event_affect_total_threshold = max(
+            0.0,
+            float(self.persona_cfg.get("event_affect_total_threshold", 0.45)),
+        )
+        self.event_affect_single_threshold = max(
+            0.0,
+            float(self.persona_cfg.get("event_affect_single_threshold", 0.14)),
+        )
+        self.event_similarity_threshold = self._clamp_float(
+            self.persona_cfg.get("event_similarity_threshold", 0.82),
+            0.0,
+            1.0,
+        )
+        self.event_force_after_minutes = max(
+            0.0,
+            float(self.persona_cfg.get("event_force_after_minutes", 30)),
+        )
 
         self.default_personality = {
             "openness": 0.56,
@@ -209,6 +228,18 @@ class PersonaStateEngine:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS persona_exchange_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                exchange_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(profile_id, session_id, exchange_hash)
+            )
+            """
+        )
         self._ensure_column(conn, "persona_session_state", "tenderness", "REAL NOT NULL DEFAULT 0.62")
         self._ensure_column(conn, "persona_session_state", "possessiveness", "REAL NOT NULL DEFAULT 0.24")
         self._ensure_column(conn, "persona_session_state", "longing", "REAL NOT NULL DEFAULT 0.34")
@@ -278,7 +309,7 @@ class PersonaStateEngine:
             return self._snapshot(global_state, session_state, self.fallback_guidance)
 
         exchange_hash = self._exchange_hash(session_id, cleaned_user_message, assistant_response)
-        if self._event_exists(session_id, exchange_hash):
+        if self._exchange_processed(session_id, exchange_hash):
             return self._snapshot(global_state, session_state, self.fallback_guidance)
 
         recalled_memory_ids = recalled_memory_ids or []
@@ -291,6 +322,7 @@ class PersonaStateEngine:
             tool_summary,
         )
         if evaluation is None:
+            self._mark_exchange_processed(session_id, exchange_hash)
             self._record_event(
                 session_id=session_id,
                 user_message=cleaned_user_message,
@@ -306,17 +338,19 @@ class PersonaStateEngine:
 
         global_state = self._apply_global_delta(global_state, evaluation, now)
         session_state = self._apply_session_delta(session_id, session_state, evaluation, now)
-        self._record_event(
-            session_id=session_id,
-            user_message=cleaned_user_message,
-            assistant_response=assistant_response,
-            evaluation=evaluation,
-            raw_response=raw_response,
-            error=None,
-            exchange_hash=exchange_hash,
-            recalled_memory_ids=recalled_memory_ids,
-            tool_summary=tool_summary,
-        )
+        self._mark_exchange_processed(session_id, exchange_hash)
+        if self._should_record_event(session_id, evaluation, now):
+            self._record_event(
+                session_id=session_id,
+                user_message=cleaned_user_message,
+                assistant_response=assistant_response,
+                evaluation=evaluation,
+                raw_response=raw_response,
+                error=None,
+                exchange_hash=exchange_hash,
+                recalled_memory_ids=recalled_memory_ids,
+                tool_summary=tool_summary,
+            )
         return self._snapshot(global_state, session_state, self.fallback_guidance)
 
     def _clean_client_status_lines(self, user_message: str) -> str:
@@ -420,6 +454,11 @@ class PersonaStateEngine:
                 "max_personality_delta": self.max_personality_delta,
                 "max_relationship_delta": self.max_relationship_delta,
                 "max_affect_delta": self.max_affect_delta,
+                "event_batch_size": self.event_batch_size,
+                "event_affect_total_threshold": self.event_affect_total_threshold,
+                "event_affect_single_threshold": self.event_affect_single_threshold,
+                "event_similarity_threshold": self.event_similarity_threshold,
+                "event_force_after_minutes": self.event_force_after_minutes,
             },
         }
 
@@ -971,6 +1010,147 @@ class PersonaStateEngine:
         except (TypeError, json.JSONDecodeError):
             return []
         return parsed if isinstance(parsed, list) else []
+
+    def _exchange_processed(self, session_id: str, exchange_hash: str) -> bool:
+        conn = self._connect()
+        row = conn.execute(
+            """
+            SELECT 1 FROM persona_exchange_log
+            WHERE profile_id = ? AND session_id = ? AND exchange_hash = ?
+            LIMIT 1
+            """,
+            (self.profile_id, session_id, exchange_hash),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT 1 FROM persona_events
+                WHERE profile_id = ? AND session_id = ? AND exchange_hash = ?
+                LIMIT 1
+                """,
+                (self.profile_id, session_id, exchange_hash),
+            ).fetchone()
+        conn.close()
+        return row is not None
+
+    def _mark_exchange_processed(self, session_id: str, exchange_hash: str) -> None:
+        conn = self._connect()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO persona_exchange_log
+            (profile_id, session_id, exchange_hash, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (self.profile_id, session_id, exchange_hash, self._format_time(self._now())),
+        )
+        conn.commit()
+        conn.close()
+
+    def _should_record_event(self, session_id: str, evaluation: dict, now: datetime) -> bool:
+        if self._is_salient_event(evaluation):
+            return True
+        last_event = self._last_event(session_id)
+        if last_event and self._similar_to_last_event(evaluation, last_event, now):
+            return False
+        return self._processed_exchanges_since_last_event(session_id) >= self.event_batch_size
+
+    def _is_salient_event(self, evaluation: dict) -> bool:
+        if evaluation.get("relationship_event") or evaluation.get("personality_signal"):
+            return True
+        affect = evaluation.get("affect_delta", {})
+        if not isinstance(affect, dict):
+            return False
+        values = []
+        for value in affect.values():
+            try:
+                values.append(abs(float(value)))
+            except (TypeError, ValueError):
+                continue
+        if not values:
+            return False
+        return (
+            max(values) >= self.event_affect_single_threshold
+            or sum(values) >= self.event_affect_total_threshold
+        )
+
+    def _similar_to_last_event(self, evaluation: dict, last_event: dict, now: datetime) -> bool:
+        if self.event_similarity_threshold <= 0:
+            return False
+        if self.event_force_after_minutes > 0:
+            created_at = self._parse_iso(last_event.get("created_at"))
+            if created_at is not None:
+                elapsed_minutes = max(0.0, (now - created_at).total_seconds() / 60)
+                if elapsed_minutes >= self.event_force_after_minutes:
+                    return False
+        current = self._event_signature_text(evaluation)
+        previous = self._event_signature_text(last_event)
+        if not current or not previous:
+            return False
+        return SequenceMatcher(None, previous, current).ratio() >= self.event_similarity_threshold
+
+    def _event_signature_text(self, event: dict) -> str:
+        return re.sub(
+            r"\s+",
+            " ",
+            " ".join(
+                [
+                    str(event.get("event_type") or ""),
+                    str(event.get("perceived_intent") or ""),
+                    str(event.get("residue") or ""),
+                ]
+            ).strip().lower(),
+        )
+
+    def _last_event(self, session_id: str) -> dict | None:
+        conn = self._connect()
+        row = conn.execute(
+            """
+            SELECT id, exchange_hash, event_type, perceived_intent, residue, created_at
+            FROM persona_events
+            WHERE profile_id = ? AND session_id = ? AND error IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (self.profile_id, session_id),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def _processed_exchanges_since_last_event(self, session_id: str) -> int:
+        last_event = self._last_event(session_id)
+        params: list[Any] = [self.profile_id, session_id]
+        since_clause = ""
+        if last_event:
+            log_row = None
+            if last_event.get("exchange_hash"):
+                conn = self._connect()
+                log_row = conn.execute(
+                    """
+                    SELECT id FROM persona_exchange_log
+                    WHERE profile_id = ? AND session_id = ? AND exchange_hash = ?
+                    LIMIT 1
+                    """,
+                    (self.profile_id, session_id, last_event["exchange_hash"]),
+                ).fetchone()
+                conn.close()
+            if log_row:
+                since_clause = "AND id > ?"
+                params.append(log_row["id"])
+            else:
+                since_clause = "AND created_at > ?"
+                params.append(last_event["created_at"])
+        conn = self._connect()
+        count = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM persona_exchange_log
+            WHERE profile_id = ? AND session_id = ?
+            {since_clause}
+            """,
+            params,
+        ).fetchone()[0]
+        conn.close()
+        return int(count or 0)
 
     def _event_exists(self, session_id: str, exchange_hash: str) -> bool:
         conn = self._connect()

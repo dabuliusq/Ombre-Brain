@@ -10,16 +10,17 @@ from persona_engine import FALLBACK_GUIDANCE, POST_REPLY_EVALUATION_PROMPT, Pers
 
 
 class FakePersonaClient:
-    def __init__(self, content: str):
+    def __init__(self, content: str | list[str]):
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(create=self._create)
         )
-        self.content = content
+        self.contents = content if isinstance(content, list) else [content]
         self.calls = []
 
     async def _create(self, **kwargs):
         self.calls.append(kwargs)
-        message = SimpleNamespace(content=self.content)
+        index = min(len(self.calls) - 1, len(self.contents) - 1)
+        message = SimpleNamespace(content=self.contents[index])
         choice = SimpleNamespace(message=message)
         return SimpleNamespace(choices=[choice])
 
@@ -61,6 +62,37 @@ def _event_payload(**overrides) -> str:
         "mood_label": "warm_touched",
         "residue": "still carrying a warm aftertaste",
         "confidence": 0.9,
+    }
+    data.update(overrides)
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _ordinary_event_payload(**overrides) -> str:
+    data = {
+        "event_type": "comfort",
+        "perceived_intent": "小雨在答辩前有些紧张，希望被陪着稳住",
+        "affect_delta": {
+            "valence": 0.02,
+            "arousal": -0.01,
+            "tenderness": 0.03,
+            "possessiveness": 0.0,
+            "longing": 0.01,
+            "security": 0.02,
+            "protective_drive": 0.03,
+        },
+        "relationship_event": False,
+        "relationship_delta": {"affinity": 0.0, "dominance": 0.0, "defensiveness": 0.0, "trust": 0.0},
+        "personality_signal": False,
+        "personality_delta": {
+            "openness": 0.0,
+            "conscientiousness": 0.0,
+            "extraversion": 0.0,
+            "agreeableness": 0.0,
+            "neuroticism": 0.0,
+        },
+        "mood_label": "warm_concern",
+        "residue": "想陪小雨把答辩前的紧张压低一点",
+        "confidence": 0.85,
     }
     data.update(overrides)
     return json.dumps(data, ensure_ascii=False)
@@ -163,6 +195,71 @@ async def test_persona_llm_update_clips_deltas_and_records_event(test_config):
     assert state["affect"]["tenderness"] == pytest.approx(0.80)
     assert state["affect"]["residue"] == "still carrying a warm aftertaste"
     assert state["reply_guidance"] == engine.fallback_guidance
+    assert _event_count(engine.db_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_persona_batches_ordinary_events_but_updates_state(test_config):
+    cfg = _persona_config(test_config, event_batch_size=2)
+    engine = PersonaStateEngine(cfg)
+    engine.client = FakePersonaClient(_ordinary_event_payload())
+
+    first = await engine.update_from_exchange(
+        "session-batch",
+        "明天答辩，有点紧张",
+        "我陪你把明天先稳住。",
+    )
+
+    assert first["affect"]["valence"] == pytest.approx(0.58)
+    assert first["affect"]["protective_drive"] == pytest.approx(0.55)
+    assert _event_count(engine.db_path) == 0
+
+    second = await engine.update_from_exchange(
+        "session-batch",
+        "打车费好贵，我有点心疼",
+        "那我们一起看看省力一点的路线。",
+    )
+
+    assert second["affect"]["valence"] == pytest.approx(0.60)
+    assert second["affect"]["protective_drive"] == pytest.approx(0.58)
+    assert _event_count(engine.db_path) == 1
+    assert len(engine.client.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_persona_skipped_ordinary_exchange_is_idempotent(test_config):
+    cfg = _persona_config(test_config, event_batch_size=2)
+    engine = PersonaStateEngine(cfg)
+    engine.client = FakePersonaClient(_ordinary_event_payload())
+
+    first = await engine.update_from_exchange(
+        "session-ordinary-idem",
+        "明天答辩，有点紧张",
+        "我陪你。",
+    )
+    second = await engine.update_from_exchange(
+        "session-ordinary-idem",
+        "明天答辩，有点紧张",
+        "我陪你。",
+    )
+
+    assert first["affect"] == second["affect"]
+    assert len(engine.client.calls) == 1
+    assert _event_count(engine.db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_persona_suppresses_similar_ordinary_events_after_batch(test_config):
+    cfg = _persona_config(test_config, event_batch_size=2)
+    engine = PersonaStateEngine(cfg)
+    engine.client = FakePersonaClient(_ordinary_event_payload())
+
+    await engine.update_from_exchange("session-similar", "明天答辩，有点紧张", "我陪你。")
+    await engine.update_from_exchange("session-similar", "打车费好贵", "我们看看路线。")
+    await engine.update_from_exchange("session-similar", "还是有点担心答辩", "先休息一下。")
+    await engine.update_from_exchange("session-similar", "也还是心疼打车费", "我在这里陪着。")
+
+    assert len(engine.client.calls) == 4
     assert _event_count(engine.db_path) == 1
 
 
