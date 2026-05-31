@@ -2329,6 +2329,108 @@ def test_gateway_explicit_topic_diffusion_stays_on_topic(
     assert "称呼偏好" not in injected
 
 
+def test_gateway_recent_context_stays_on_explicit_topic(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="FF14进度与计划：小雨目前处于6.x版本，写完论文后继续跑主线。",
+        name="FF14进度与计划",
+        hours_ago=1,
+        importance=10,
+        domain=["游戏"],
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="厄科与纳西索斯：Haven讲过回声和水仙的神话。",
+        name="厄科与纳西索斯",
+        hours_ago=1,
+        importance=9,
+        domain=["阅读"],
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="双向触碰硬件与微信桥进度：ESP32 MPR121 触摸模块调试。",
+        name="双向触碰硬件与微信桥进度",
+        hours_ago=1,
+        importance=9,
+        domain=["硬件"],
+    )
+
+    app, _, _, captured = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-recent-ff14-topic",
+            },
+            json={"messages": [{"role": "user", "content": "FF14 进度 偏好"}]},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Recent Context" in injected
+    assert "FF14进度与计划" in injected
+    assert "厄科与纳西索斯" not in injected
+    assert "双向触碰硬件" not in injected
+
+
+def test_gateway_recent_context_keeps_recent_items_for_vague_query(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="厄科与纳西索斯：Haven讲过回声和水仙的神话。",
+        name="厄科与纳西索斯",
+        hours_ago=1,
+        importance=9,
+        domain=["阅读"],
+    )
+
+    app, _, _, captured = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-recent-vague",
+            },
+            json={"messages": [{"role": "user", "content": "最近发生了什么"}]},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Recent Context" in injected
+    assert "厄科与纳西索斯" in injected
+
+
 def test_gateway_reranker_reorders_dynamic_memory_candidates(
     monkeypatch,
     test_config,

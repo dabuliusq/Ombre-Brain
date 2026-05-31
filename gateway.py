@@ -591,7 +591,7 @@ class GatewayService:
             context_mode = self._classify_context_mode(current_user_query, persona_state)
             if self._should_inject_interval(session_id, self.core_memory_interval_rounds):
                 core_memory = await self._build_core_memory_block(all_buckets)
-            recent_context = await self._build_recent_context_block(all_buckets)
+            recent_context = await self._build_recent_context_block(all_buckets, current_user_query)
             if self.recalled_budget > 0 or self.related_memory_budget > 0:
                 all_moments, grouped_moments, moment_edges = self._refresh_moment_graph(all_buckets)
                 recalled_moments, moment_candidates = await self._select_dynamic_moments(
@@ -2081,14 +2081,20 @@ class GatewayService:
         )
         return await self._summarize_buckets(core_buckets, self.core_budget)
 
-    async def _build_recent_context_block(self, all_buckets: list[dict]) -> str:
+    async def _build_recent_context_block(self, all_buckets: list[dict], query_text: str = "") -> str:
         cutoff = datetime.now() - timedelta(hours=self.head_recent_hours)
+        enforce_topic = (
+            self._query_requires_topic_evidence(query_text)
+            and not self._query_wants_body_chain(query_text)
+        )
         recent_buckets = []
         for bucket in all_buckets:
             meta = bucket.get("metadata", {})
             if meta.get("type") == "feel":
                 continue
             if meta.get("pinned") or meta.get("protected"):
+                continue
+            if enforce_topic and not self._bucket_has_query_topic_evidence(query_text, bucket):
                 continue
             created = self._parse_iso(meta.get("created") or meta.get("last_active"))
             if created and created >= cutoff:
