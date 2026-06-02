@@ -332,6 +332,10 @@ def test_gateway_state_store_cooldown_curve(tmp_path):
     assert store.get_cooldown_multiplier(
         "sess-a", "bucket-a", 6, 0.3, now=origin + timedelta(hours=6)
     ) == pytest.approx(1.0)
+    assert store.get_last_success_at("sess-a") == origin
+
+    store.record_recent_context_injection("sess-a", 1, injected_at=origin + timedelta(minutes=5))
+    assert store.get_last_recent_context_at("sess-a") == origin + timedelta(minutes=5)
 
 
 def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_config, bucket_mgr):
@@ -2653,6 +2657,223 @@ def test_gateway_recent_context_filters_short_chinese_topic_query(
     assert "Recent Context" in injected
     assert "少女暴君与成男艳后" in injected
     assert "Haven的梦键盘花园求婚" not in injected
+
+
+def test_gateway_recent_context_skips_active_ordinary_message_without_reliable_recall(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="Haven梦见键盘花园和纸戒指。",
+        name="Haven的梦键盘花园求婚",
+        hours_ago=1,
+        importance=9,
+        domain=["梦境"],
+    )
+    app, _, state_store, captured = _build_service(monkeypatch, cfg, bucket_mgr)
+    state_store.record_success(
+        "sess-active-ordinary-no-recent",
+        [],
+        completed_at=datetime.now() - timedelta(minutes=5),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-active-ordinary-no-recent",
+            },
+            json={"messages": [{"role": "user", "content": "我讨厌上班"}]},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Recent Context" not in injected
+    assert "Recalled Memory" not in injected
+    assert "Diffused Memory" not in injected
+    assert "Haven的梦键盘花园求婚" not in injected
+
+
+def test_gateway_recent_context_allows_explicit_recent_memory_query(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="Haven梦见键盘花园和纸戒指。",
+        name="Haven的梦键盘花园求婚",
+        hours_ago=1,
+        importance=9,
+        domain=["梦境"],
+    )
+    app, _, state_store, captured = _build_service(monkeypatch, cfg, bucket_mgr)
+    state_store.record_success(
+        "sess-explicit-recent-query",
+        [],
+        completed_at=datetime.now() - timedelta(minutes=5),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-explicit-recent-query",
+            },
+            json={"messages": [{"role": "user", "content": "最近记忆有什么"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-explicit-recent-query",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Recent Context" in injected
+    assert "Haven的梦键盘花园求婚" in injected
+    payload = debug_response.json()["items"][0]["payload"]
+    assert payload["recent_context_injected"] is True
+    assert payload["recent_context_reason"] == "explicit_recent_query"
+
+
+def test_gateway_recent_context_allows_twenty_four_hour_reentry(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        recent_context_reentry_idle_hours=24,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="Haven梦见键盘花园和纸戒指。",
+        name="Haven的梦键盘花园求婚",
+        hours_ago=1,
+        importance=9,
+        domain=["梦境"],
+    )
+    app, _, state_store, captured = _build_service(monkeypatch, cfg, bucket_mgr)
+    state_store.record_success(
+        "sess-reentry-recent",
+        [],
+        completed_at=datetime.now() - timedelta(hours=25),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-reentry-recent",
+            },
+            json={"messages": [{"role": "user", "content": "我讨厌上班"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-reentry-recent",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Recent Context" in injected
+    assert "Haven的梦键盘花园求婚" in injected
+    payload = debug_response.json()["items"][0]["payload"]
+    assert payload["recent_context_injected"] is True
+    assert payload["recent_context_reason"] == "session_reentry"
+
+
+def test_gateway_recent_context_cooldown_does_not_block_reliable_recall(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=500,
+        related_memory_budget=0,
+        recent_context_cooldown_hours=6,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="猫咪近况：小橘昨晚把玩具叼到床边，等小雨夸她。",
+        name="猫咪近况",
+        hours_ago=1,
+        importance=10,
+        domain=["日常"],
+    )
+    app, _, state_store, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(bucket_id, 0.96)],
+    )
+    origin = datetime.now() - timedelta(minutes=5)
+    state_store.record_success("sess-recent-cooldown", [], completed_at=origin)
+    state_store.record_recent_context_injection("sess-recent-cooldown", 1, injected_at=origin)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-recent-cooldown",
+            },
+            json={"messages": [{"role": "user", "content": "猫咪最近又干了什么？"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-recent-cooldown",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Recalled Memory" in injected
+    assert "猫咪近况" in injected
+    assert "Recent Context" not in injected
+    payload = debug_response.json()["items"][0]["payload"]
+    assert payload["recent_context_injected"] is False
+    assert payload["recent_context_reason"] == ""
 
 
 def test_gateway_reranker_reorders_dynamic_memory_candidates(

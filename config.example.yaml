@@ -248,6 +248,8 @@ gateway:
   #       - "Qwen/Qwen3-32B"
   #       - "THUDM/GLM-4-32B"
   head_recent_hours: 72
+  recent_context_reentry_idle_hours: 24
+  recent_context_cooldown_hours: 6
   dynamic_top_k: 10
   inject_max_cards: 2
   skip_recent_rounds: 5

@@ -152,6 +152,12 @@ class GatewayService:
                     break
 
         self.head_recent_hours = int(self.gateway_cfg.get("head_recent_hours", 72))
+        self.recent_context_reentry_idle_hours = float(
+            self.gateway_cfg.get("recent_context_reentry_idle_hours", 24)
+        )
+        self.recent_context_cooldown_hours = float(
+            self.gateway_cfg.get("recent_context_cooldown_hours", 6)
+        )
         self.dynamic_top_k = int(self.gateway_cfg.get("dynamic_top_k", 10))
         self.inject_max_cards = max(0, min(2, int(self.gateway_cfg.get("inject_max_cards", 2))))
         self.skip_recent_rounds = max(0, int(self.gateway_cfg.get("skip_recent_rounds", 5)))
@@ -552,6 +558,7 @@ class GatewayService:
         persona_block = ""
         core_memory = ""
         recent_context = ""
+        recent_context_reason = ""
         recalled_moments: list[dict] = []
         moment_candidates: list[dict] = []
         suppressed_moments: list[dict] = []
@@ -579,7 +586,6 @@ class GatewayService:
             context_mode = self._classify_context_mode(current_user_query, persona_state)
             if self._should_inject_interval(session_id, self.core_memory_interval_rounds):
                 core_memory = await self._build_core_memory_block(all_buckets)
-            recent_context = await self._build_recent_context_block(all_buckets, current_user_query)
             if self.recalled_budget > 0 or self.related_memory_budget > 0:
                 all_moments, grouped_moments, moment_edges = self._refresh_moment_graph(all_buckets)
                 (
@@ -617,6 +623,24 @@ class GatewayService:
                 current_user_query,
                 context_mode=context_mode,
             )
+            reliable_dynamic_context = bool(recalled_memory.strip() or related_memory.strip())
+            if self._should_inject_recent_context(
+                session_id,
+                current_user_query,
+                has_reliable_dynamic_context=reliable_dynamic_context,
+            ):
+                explicit_recent_query = self._query_requests_recent_context(current_user_query)
+                recent_context = await self._build_recent_context_block(
+                    all_buckets,
+                    current_user_query,
+                    allow_vague=explicit_recent_query,
+                )
+                if recent_context.strip():
+                    recent_context_reason = self._recent_context_reason(
+                        session_id,
+                        current_user_query,
+                        has_reliable_dynamic_context=reliable_dynamic_context,
+                    )
             injected_ids = list(
                 dict.fromkeys(
                     [
@@ -663,6 +687,8 @@ class GatewayService:
                 recalled_moments=recalled_moments,
                 recalled_memory=recalled_memory,
                 related_memory=related_memory,
+                recent_context=recent_context,
+                recent_context_reason=recent_context_reason,
                 favorite_ids=favorite_ids,
                 context_mode=context_mode,
                 suppressed_moments=suppressed_moments,
@@ -954,6 +980,16 @@ class GatewayService:
             )
             return
         round_id = self.state_store.record_success(session_id, recalled_ids)
+        if injection_debug and injection_debug.get("recent_context_injected"):
+            try:
+                self.state_store.record_recent_context_injection(session_id, round_id)
+            except Exception as exc:
+                logger.warning(
+                    "Gateway recent context cooldown record failed | session=%s round=%s error=%s",
+                    session_id,
+                    round_id,
+                    exc,
+                )
         if injection_debug is not None:
             try:
                 self.state_store.record_injection_debug(session_id, round_id, injection_debug)
@@ -2079,8 +2115,14 @@ class GatewayService:
         )
         return await self._summarize_buckets(core_buckets, self.core_budget)
 
-    async def _build_recent_context_block(self, all_buckets: list[dict], query_text: str = "") -> str:
-        if self._auto_query_too_vague(query_text):
+    async def _build_recent_context_block(
+        self,
+        all_buckets: list[dict],
+        query_text: str = "",
+        *,
+        allow_vague: bool = False,
+    ) -> str:
+        if self._auto_query_too_vague(query_text) and not allow_vague:
             return ""
         cutoff = datetime.now() - timedelta(hours=self.head_recent_hours)
         enforce_topic = (
@@ -2105,6 +2147,90 @@ class GatewayService:
             reverse=True,
         )
         return await self._summarize_buckets(recent_buckets[:6], self.recent_budget)
+
+    def _should_inject_recent_context(
+        self,
+        session_id: str,
+        query_text: str,
+        *,
+        has_reliable_dynamic_context: bool = False,
+    ) -> bool:
+        if self.recent_budget <= 0 or self.head_recent_hours <= 0:
+            return False
+        if self._query_requests_recent_context(query_text):
+            return True
+        if self._auto_query_too_vague(query_text):
+            return False
+        if self._recent_context_in_cooldown(session_id):
+            return False
+        return bool(self._recent_context_reason(session_id, query_text, has_reliable_dynamic_context))
+
+    def _recent_context_reason(
+        self,
+        session_id: str,
+        query_text: str,
+        has_reliable_dynamic_context: bool = False,
+    ) -> str:
+        if self._query_requests_recent_context(query_text):
+            return "explicit_recent_query"
+        if has_reliable_dynamic_context:
+            return "reliable_dynamic_context"
+        if self.state_store.get_current_round(session_id) <= 0:
+            return "new_session"
+        idle_hours = self._session_idle_hours(session_id)
+        if (
+            idle_hours is not None
+            and self.recent_context_reentry_idle_hours > 0
+            and idle_hours >= self.recent_context_reentry_idle_hours
+        ):
+            return "session_reentry"
+        return ""
+
+    def _recent_context_in_cooldown(self, session_id: str) -> bool:
+        if self.recent_context_cooldown_hours <= 0:
+            return False
+        last_injected = self.state_store.get_last_recent_context_at(session_id)
+        if not last_injected:
+            return False
+        elapsed_hours = max(0.0, (datetime.now() - last_injected).total_seconds() / 3600)
+        return elapsed_hours < self.recent_context_cooldown_hours
+
+    def _session_idle_hours(self, session_id: str) -> float | None:
+        last_success = self.state_store.get_last_success_at(session_id)
+        if not last_success:
+            return None
+        return max(0.0, (datetime.now() - last_success).total_seconds() / 3600)
+
+    @staticmethod
+    def _query_requests_recent_context(query: str) -> bool:
+        text = " ".join(str(query or "").lower().split())
+        if not text:
+            return False
+        explicit_phrases = (
+            "最近记忆",
+            "最近的记忆",
+            "最近我们聊",
+            "最近聊过",
+            "最近说过",
+            "最近提过",
+            "最近发生",
+            "最近记得",
+            "刚才",
+            "刚刚",
+            "上次",
+            "这几天",
+            "这两天",
+            "前几天",
+            "之前聊",
+            "之前说",
+            "之前提",
+            "recent memory",
+            "recent memories",
+            "what did we talk",
+            "last time",
+            "earlier",
+        )
+        return any(phrase in text for phrase in explicit_phrases)
 
     async def _build_relationship_weather_block(self, all_buckets: list[dict]) -> str:
         if self.relationship_weather_budget <= 0:
@@ -3666,6 +3792,8 @@ class GatewayService:
         recalled_moments: list[dict],
         recalled_memory: str,
         related_memory: str,
+        recent_context: str,
+        recent_context_reason: str,
         favorite_ids: list[str],
         context_mode: str = "",
         suppressed_moments: list[dict] | None = None,
@@ -3688,6 +3816,8 @@ class GatewayService:
             "query_preview": self._clip_text(query, 500),
             "stable_tokens": count_tokens_approx(stable_context),
             "dynamic_tokens": count_tokens_approx(dynamic_context),
+            "recent_context_injected": bool(str(recent_context or "").strip()),
+            "recent_context_reason": recent_context_reason,
             "injected_bucket_ids": injected_bucket_ids,
             "recalled_bucket_ids": recalled_bucket_ids,
             "diffused_bucket_ids": diffused_bucket_ids,
