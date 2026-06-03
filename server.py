@@ -91,7 +91,11 @@ from memory_relevance import (
     relevance_decision,
     relevance_multiplier,
 )
-from memory_layers import CONTEXT_ONLY_SECTIONS, is_context_only_section
+from memory_layers import (
+    CONTEXT_ONLY_SECTIONS,
+    is_context_only_section,
+    normalize_write_classification,
+)
 from recall_policy import RecallPolicy
 from memory_write_gate import MemoryWriteGate, WriteGateDecision
 from memory_nodes import MemoryNodeStore
@@ -1498,6 +1502,9 @@ async def _merge_or_create(
     name: str = "",
     *,
     allow_merge: bool = True,
+    memory_subject: str = "",
+    memory_layer: str = "",
+    memory_classification_source: str = "",
 ) -> tuple[str, str, bool, dict | None]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -1555,9 +1562,30 @@ async def _merge_or_create(
         valence=valence,
         arousal=arousal,
         name=name or None,
+        extra_metadata=_memory_classification_metadata(
+            memory_subject,
+            memory_layer,
+            memory_classification_source,
+        ),
     )
     _queue_embedding_refresh(bucket_id)
     return bucket_id, name or bucket_id, False, related_bucket
+
+
+def _memory_classification_metadata(
+    memory_subject: str,
+    memory_layer: str,
+    memory_classification_source: str = "",
+) -> dict:
+    if not memory_subject or not memory_layer:
+        return {}
+    payload = {
+        "memory_subject": str(memory_subject),
+        "memory_layer": str(memory_layer),
+    }
+    if memory_classification_source:
+        payload["memory_classification_source"] = str(memory_classification_source)
+    return payload
 
 
 async def _build_mcp_diffused_memory_block(
@@ -3955,6 +3983,12 @@ async def hold(
     suggested_name = analysis.get("suggested_name", "")
 
     all_tags = list(dict.fromkeys(auto_tags + extra_tags))
+    classification = normalize_write_classification(
+        memory_subject=analysis.get("memory_subject", ""),
+        memory_layer=analysis.get("memory_layer", ""),
+        tags=all_tags,
+        content=content,
+    )
     if _has_favorite_tag(all_tags) and not _has_favorite_reason(content):
         return _favorite_reason_error()
 
@@ -3972,6 +4006,11 @@ async def hold(
             name=suggested_name or None,
             bucket_type="permanent",
             pinned=True,
+            extra_metadata=_memory_classification_metadata(
+                classification["memory_subject"],
+                classification["memory_layer"],
+                classification["memory_classification_source"],
+            ),
         )
         _queue_embedding_refresh(bucket_id)
         _queue_memory_enrichment(bucket_id)
@@ -3988,6 +4027,9 @@ async def hold(
         arousal=arousal,
         name=suggested_name,
         allow_merge=False,
+        memory_subject=classification["memory_subject"],
+        memory_layer=classification["memory_layer"],
+        memory_classification_source=classification["memory_classification_source"],
     )
     _queue_memory_enrichment(bucket_id)
 
@@ -4076,6 +4118,12 @@ async def grow(content: str, auto: bool = False, source: str = "", context: Cont
                 "tags": [], "suggested_name": "",
             }
         fast_tags = analysis.get("tags", [])
+        fast_classification = normalize_write_classification(
+            memory_subject=analysis.get("memory_subject", ""),
+            memory_layer=analysis.get("memory_layer", ""),
+            tags=fast_tags,
+            content=content,
+        )
         if _has_favorite_tag(fast_tags) and not _has_favorite_reason(content):
             return _favorite_reason_error()
         bucket_id, result_name, is_merged, related_bucket = await _merge_or_create(
@@ -4087,6 +4135,9 @@ async def grow(content: str, auto: bool = False, source: str = "", context: Cont
             arousal=analysis.get("arousal", 0.3),
             name=analysis.get("suggested_name", ""),
             allow_merge=False,
+            memory_subject=fast_classification["memory_subject"],
+            memory_layer=fast_classification["memory_layer"],
+            memory_classification_source=fast_classification["memory_classification_source"],
         )
         _queue_memory_enrichment(bucket_id)
         action = "合并" if is_merged else "新建"
@@ -4112,6 +4163,12 @@ async def grow(content: str, auto: bool = False, source: str = "", context: Cont
     for item in items:
         try:
             item_tags = item.get("tags", [])
+            item_classification = normalize_write_classification(
+                memory_subject=item.get("memory_subject", ""),
+                memory_layer=item.get("memory_layer", ""),
+                tags=item_tags,
+                content=item.get("content", ""),
+            )
             if _has_favorite_tag(item_tags) and not _has_favorite_reason(item.get("content", "")):
                 results.append("⚠️favorite 缺少喜欢它的原因")
                 continue
@@ -4123,6 +4180,9 @@ async def grow(content: str, auto: bool = False, source: str = "", context: Cont
                 valence=item.get("valence", 0.5),
                 arousal=item.get("arousal", 0.3),
                 name=item.get("name", ""),
+                memory_subject=item_classification["memory_subject"],
+                memory_layer=item_classification["memory_layer"],
+                memory_classification_source=item_classification["memory_classification_source"],
             )
             _queue_memory_enrichment(bucket_id)
 

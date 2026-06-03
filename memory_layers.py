@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,31 @@ LAYER_FAVORITE = "favorite_memory"
 LAYER_DREAM = "dream"
 LAYER_SOURCE_RECORD = "source_record"
 LAYER_ARCHIVE = "archive"
+
+WRITE_SUBJECT_USER = "user"
+WRITE_SUBJECT_RELATIONSHIP = "relationship"
+WRITE_SUBJECT_EVENT = "event"
+
+WRITE_LAYER_STABLE_BOUNDARY = "stable_boundary"
+WRITE_LAYER_SHORT_STATE = "short_state"
+WRITE_LAYER_PROCESS_EVENT = "process_event"
+WRITE_LAYER_RELATIONSHIP_LESSON = "relationship_lesson"
+
+WRITE_SUBJECTS = frozenset(
+    {
+        WRITE_SUBJECT_USER,
+        WRITE_SUBJECT_RELATIONSHIP,
+        WRITE_SUBJECT_EVENT,
+    }
+)
+WRITE_LAYERS = frozenset(
+    {
+        WRITE_LAYER_STABLE_BOUNDARY,
+        WRITE_LAYER_SHORT_STATE,
+        WRITE_LAYER_PROCESS_EVENT,
+        WRITE_LAYER_RELATIONSHIP_LESSON,
+    }
+)
 
 DIRECT_CONTENT = "content_only"
 DIRECT_EXPLICIT = "explicit_only"
@@ -41,6 +67,51 @@ RELATIONSHIP_WEATHER_TAGS = frozenset(
 RAW_SOURCE_TAGS = frozenset({"raw_source", "chat_log", "diary_source", "source_record"})
 FAVORITE_TAG = "haven_favorite"
 FAVORITE_PREFIX = "flavor_"
+
+SUBJECT_ALIASES = {
+    "user": WRITE_SUBJECT_USER,
+    "xiaoyu": WRITE_SUBJECT_USER,
+    "rain": WRITE_SUBJECT_USER,
+    "person": WRITE_SUBJECT_USER,
+    "profile": WRITE_SUBJECT_USER,
+    "state": WRITE_SUBJECT_USER,
+    "preference": WRITE_SUBJECT_USER,
+    "boundary": WRITE_SUBJECT_USER,
+    "relationship": WRITE_SUBJECT_RELATIONSHIP,
+    "relation": WRITE_SUBJECT_RELATIONSHIP,
+    "ai": WRITE_SUBJECT_RELATIONSHIP,
+    "assistant": WRITE_SUBJECT_RELATIONSHIP,
+    "haven": WRITE_SUBJECT_RELATIONSHIP,
+    "event": WRITE_SUBJECT_EVENT,
+    "process": WRITE_SUBJECT_EVENT,
+    "project": WRITE_SUBJECT_EVENT,
+    "task": WRITE_SUBJECT_EVENT,
+}
+LAYER_ALIASES = {
+    "stable_boundary": WRITE_LAYER_STABLE_BOUNDARY,
+    "stable": WRITE_LAYER_STABLE_BOUNDARY,
+    "boundary": WRITE_LAYER_STABLE_BOUNDARY,
+    "preference": WRITE_LAYER_STABLE_BOUNDARY,
+    "habit": WRITE_LAYER_STABLE_BOUNDARY,
+    "identity": WRITE_LAYER_STABLE_BOUNDARY,
+    "core_boundary": WRITE_LAYER_STABLE_BOUNDARY,
+    "short_state": WRITE_LAYER_SHORT_STATE,
+    "state": WRITE_LAYER_SHORT_STATE,
+    "current_state": WRITE_LAYER_SHORT_STATE,
+    "temporary_state": WRITE_LAYER_SHORT_STATE,
+    "short-term_state": WRITE_LAYER_SHORT_STATE,
+    "process_event": WRITE_LAYER_PROCESS_EVENT,
+    "event": WRITE_LAYER_PROCESS_EVENT,
+    "project_state": WRITE_LAYER_PROCESS_EVENT,
+    "active_project": WRITE_LAYER_PROCESS_EVENT,
+    "task_state": WRITE_LAYER_PROCESS_EVENT,
+    "relationship_lesson": WRITE_LAYER_RELATIONSHIP_LESSON,
+    "relationship": WRITE_LAYER_RELATIONSHIP_LESSON,
+    "response_rule": WRITE_LAYER_RELATIONSHIP_LESSON,
+    "promise": WRITE_LAYER_RELATIONSHIP_LESSON,
+    "agreement": WRITE_LAYER_RELATIONSHIP_LESSON,
+    "commitment": WRITE_LAYER_RELATIONSHIP_LESSON,
+}
 
 
 @dataclass(frozen=True)
@@ -211,6 +282,65 @@ def is_context_only_section(section: object) -> bool:
     return _lower(section) in CONTEXT_ONLY_SECTIONS
 
 
+def normalize_write_subject(value: object) -> str:
+    text = _write_key(value)
+    return SUBJECT_ALIASES.get(text, text if text in WRITE_SUBJECTS else "")
+
+
+def normalize_write_layer(value: object) -> str:
+    text = _write_key(value)
+    return LAYER_ALIASES.get(text, text if text in WRITE_LAYERS else "")
+
+
+def normalize_write_classification(
+    *,
+    memory_subject: object = "",
+    memory_layer: object = "",
+    tags: object = None,
+    content: str = "",
+) -> dict[str, str]:
+    """Return conservative writer-side classification metadata."""
+    tag_set = _tags({"tags": tags or []})
+    subject = normalize_write_subject(memory_subject)
+    layer = normalize_write_layer(memory_layer)
+    source = "model" if subject and layer else "rule"
+
+    inferred_subject, inferred_layer = _infer_write_classification(tag_set, content)
+    hard_subject, hard_layer = _hard_write_classification(tag_set)
+    if hard_subject and hard_layer and (subject or layer):
+        if subject != hard_subject or layer != hard_layer:
+            source = "model_adjusted"
+        subject, layer = hard_subject, hard_layer
+    if not subject:
+        subject = inferred_subject
+    if not layer:
+        layer = inferred_layer
+
+    if layer == WRITE_LAYER_RELATIONSHIP_LESSON:
+        subject = WRITE_SUBJECT_RELATIONSHIP
+    elif layer in {WRITE_LAYER_STABLE_BOUNDARY, WRITE_LAYER_SHORT_STATE} and not subject:
+        subject = WRITE_SUBJECT_USER
+    elif layer == WRITE_LAYER_PROCESS_EVENT and not subject:
+        subject = WRITE_SUBJECT_EVENT
+
+    if subject not in WRITE_SUBJECTS:
+        subject = WRITE_SUBJECT_EVENT
+    if layer not in WRITE_LAYERS:
+        layer = WRITE_LAYER_PROCESS_EVENT
+
+    if source == "model" and (
+        normalize_write_subject(memory_subject) != subject
+        or normalize_write_layer(memory_layer) != layer
+    ):
+        source = "model_adjusted"
+
+    return {
+        "memory_subject": subject,
+        "memory_layer": layer,
+        "memory_classification_source": source,
+    }
+
+
 def _metadata(item: dict[str, Any]) -> dict[str, Any]:
     meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     return meta
@@ -255,3 +385,31 @@ def _truthy(value: object) -> bool:
 
 def _lower(value: object) -> str:
     return str(value or "").strip().lower()
+
+
+def _write_key(value: object) -> str:
+    return re.sub(r"[^0-9a-zA-Z_\-\u4e00-\u9fff]+", "_", _lower(value)).strip("_")
+
+
+def _infer_write_classification(tags: set[str], content: str) -> tuple[str, str]:
+    hard_subject, hard_layer = _hard_write_classification(tags)
+    if hard_subject and hard_layer:
+        return hard_subject, hard_layer
+    text = _lower(content)
+    if any(term in text for term in ("不喜欢", "边界", "习惯", "偏好", "害怕", "讨厌")):
+        return WRITE_SUBJECT_USER, WRITE_LAYER_STABLE_BOUNDARY
+    if any(term in text for term in ("头疼", "睡不好", "今天", "这几天", "最近状态")):
+        return WRITE_SUBJECT_USER, WRITE_LAYER_SHORT_STATE
+    if any(term in text for term in ("以后要", "下次", "需要先", "承诺", "约定")):
+        return WRITE_SUBJECT_RELATIONSHIP, WRITE_LAYER_RELATIONSHIP_LESSON
+    return WRITE_SUBJECT_EVENT, WRITE_LAYER_PROCESS_EVENT
+
+
+def _hard_write_classification(tags: set[str]) -> tuple[str, str]:
+    if tags & {"boundary", "stable_preference", "profile_fact"}:
+        return WRITE_SUBJECT_USER, WRITE_LAYER_STABLE_BOUNDARY
+    if tags & {"identity", "signal", "relationship_event", "commitment", "wish"}:
+        return WRITE_SUBJECT_RELATIONSHIP, WRITE_LAYER_RELATIONSHIP_LESSON
+    if tags & {"project_event", "todo", "memory_system"}:
+        return WRITE_SUBJECT_EVENT, WRITE_LAYER_PROCESS_EVENT
+    return "", ""

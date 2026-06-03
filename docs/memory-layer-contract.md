@@ -58,6 +58,16 @@ After a meaningful interaction, decide in this order:
 
 Only write what survives that test.
 
+Newly written buckets should carry a writer-side first pass:
+
+```yaml
+memory_subject: user | relationship | event
+memory_layer: stable_boundary | short_state | process_event | relationship_lesson
+memory_classification_source: model | model_adjusted | rule | default
+```
+
+This first pass answers what the writer thought the memory was. Runtime recall may still apply stricter layer policy from bucket type, tags, pinned/protected, archive state, and context-only sections.
+
 Examples:
 
 - "I dislike being lectured." Long-term user boundary. It may become core or anchor if repeated or central.

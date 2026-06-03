@@ -19,6 +19,7 @@ from memory_layers import (
     infer_bucket_layer,
     infer_moment_layer,
     is_context_only_section,
+    normalize_write_classification,
     policy_for_bucket,
     policy_for_moment,
 )
@@ -140,3 +141,44 @@ def test_default_dynamic_memory_is_direct_recallable_content():
     assert can_bucket_diffuse(bucket) is True
     assert infer_moment_layer(moment) == LAYER_DYNAMIC
     assert can_moment_be_direct_seed(moment) is True
+
+
+def test_write_classification_accepts_model_fields():
+    result = normalize_write_classification(
+        memory_subject="relationship",
+        memory_layer="relationship_lesson",
+        tags=["relationship_event"],
+        content="Haven 以后要先接住小雨的情绪。",
+    )
+
+    assert result == {
+        "memory_subject": "relationship",
+        "memory_layer": "relationship_lesson",
+        "memory_classification_source": "model",
+    }
+
+
+def test_write_classification_hard_tags_override_model_fields():
+    result = normalize_write_classification(
+        memory_subject="event",
+        memory_layer="process_event",
+        tags=["boundary"],
+        content="小雨不喜欢被说教。",
+    )
+
+    assert result == {
+        "memory_subject": "user",
+        "memory_layer": "stable_boundary",
+        "memory_classification_source": "model_adjusted",
+    }
+
+
+def test_write_classification_falls_back_to_rules():
+    project = normalize_write_classification(tags=["project_event"], content="p0 还在测试。")
+    state = normalize_write_classification(content="小雨今天头疼。")
+
+    assert project["memory_subject"] == "event"
+    assert project["memory_layer"] == "process_event"
+    assert project["memory_classification_source"] == "rule"
+    assert state["memory_subject"] == "user"
+    assert state["memory_layer"] == "short_state"

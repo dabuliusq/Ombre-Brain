@@ -81,6 +81,18 @@ class DigestDehydrator(DummyDehydrator):
         ]
 
 
+class ClassifiedDehydrator(DummyDehydrator):
+    async def analyze(self, content: str):
+        result = await super().analyze(content)
+        result.update(
+            {
+                "memory_subject": "event",
+                "memory_layer": "process_event",
+            }
+        )
+        return result
+
+
 class EchoDehydrator:
     async def dehydrate(self, content: str, metadata: dict | None = None) -> str:
         return content
@@ -525,6 +537,64 @@ async def test_hold_returns_before_slow_embedding_refresh(monkeypatch, bucket_mg
     assert len(buckets) == 1
     await finish_blocking_embedding(embedding_engine)
     assert embedding_engine.calls[0][0] == buckets[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_hold_writes_memory_classification_metadata(monkeypatch, bucket_mgr, decay_eng):
+    import server
+
+    async def no_related_bucket(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "decay_engine", decay_eng)
+    monkeypatch.setattr(server, "dehydrator", ClassifiedDehydrator())
+    monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+    monkeypatch.setattr(server, "_find_readonly_related_bucket", no_related_bucket)
+    monkeypatch.setattr(server, "_queue_memory_enrichment", lambda bucket_id: None)
+
+    result = await server.hold(
+        content="小雨不喜欢被说教，以后需要先接住她的感受。",
+        tags="boundary",
+        importance=7,
+    )
+    buckets = await bucket_mgr.list_all(include_archive=True)
+    meta = buckets[0]["metadata"]
+
+    assert result.startswith("新建→")
+    assert meta["memory_subject"] == "user"
+    assert meta["memory_layer"] == "stable_boundary"
+    assert meta["memory_classification_source"] == "model_adjusted"
+
+
+@pytest.mark.asyncio
+async def test_grow_writes_memory_classification_metadata_when_digest_omits_it(
+    monkeypatch,
+    bucket_mgr,
+    decay_eng,
+):
+    import server
+
+    async def no_related_bucket(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "decay_engine", decay_eng)
+    monkeypatch.setattr(server, "dehydrator", DigestDehydrator())
+    monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+    monkeypatch.setattr(server, "_find_readonly_related_bucket", no_related_bucket)
+    monkeypatch.setattr(server, "_queue_memory_enrichment", lambda bucket_id: None)
+
+    result = await server.grow(
+        "2026-06-03，p0 记忆分层开始落地：先加 memory layer policy，再让写入者产出初判字段。"
+    )
+    buckets = await bucket_mgr.list_all(include_archive=True)
+    meta = buckets[0]["metadata"]
+
+    assert "1条|新1合0" in result
+    assert meta["memory_subject"] == "event"
+    assert meta["memory_layer"] == "process_event"
+    assert meta["memory_classification_source"] == "rule"
 
 
 @pytest.mark.asyncio
