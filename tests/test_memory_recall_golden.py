@@ -180,10 +180,14 @@ def _run_gateway_recall_case(cfg: dict, bucket_mgr: BucketManager, case: dict[st
     recalled_moments, moment_candidates, _suppressed_moments, _suppressed_buckets = _run(
         service._select_dynamic_moments(query, session_id, all_buckets, grouped_moments)
     )
-    recalled_memory = service._format_recalled_moments(
-        recalled_moments,
-        grouped_moments,
-        service.recalled_budget,
+    recalled_memory = _run(
+        service._format_recalled_moments(
+            recalled_moments,
+            grouped_moments,
+            all_buckets,
+            service.recalled_budget,
+            query_text=query,
+        )
     )
     diffused_memory = service._build_moment_diffused_memory_block(
         recalled_moments,

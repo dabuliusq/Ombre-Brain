@@ -265,9 +265,16 @@ def policy_for_moment(moment: dict[str, Any] | None) -> MemoryLayerPolicy:
     return policy_for_layer(infer_moment_layer(moment))
 
 
+def _parent_policy_for_moment(moment: dict[str, Any] | None) -> MemoryLayerPolicy:
+    moment = moment if isinstance(moment, dict) else {}
+    return policy_for_layer(
+        infer_bucket_layer({"metadata": _moment_metadata(moment), "id": moment.get("bucket_id")})
+    )
+
+
 def can_moment_be_direct_seed(moment: dict[str, Any] | None, *, explicit_lookup: bool = False) -> bool:
     policy = policy_for_moment(moment)
-    if policy.direct_seed_policy == DIRECT_NEVER:
+    if policy.direct_seed_policy in {DIRECT_NEVER, DIRECT_RESONANCE}:
         return False
     if policy.direct_seed_policy == DIRECT_EXPLICIT:
         return bool(explicit_lookup)
@@ -276,6 +283,33 @@ def can_moment_be_direct_seed(moment: dict[str, Any] | None, *, explicit_lookup:
 
 def can_bucket_diffuse(bucket: dict[str, Any] | None) -> bool:
     return policy_for_bucket(bucket).can_diffuse
+
+
+def can_bucket_be_related_target(bucket: dict[str, Any] | None, *, explicit_lookup: bool = False) -> bool:
+    policy = policy_for_bucket(bucket)
+    if policy.layer == LAYER_ARCHIVE:
+        return bool(explicit_lookup)
+    if policy.layer in {LAYER_DREAM, LAYER_SOURCE_RECORD, LAYER_RELATIONSHIP_WEATHER, LAYER_AFFECT_CONTEXT}:
+        return False
+    return policy.can_diffuse
+
+
+def can_moment_be_recall_context(moment: dict[str, Any] | None) -> bool:
+    policy = _parent_policy_for_moment(moment)
+    return policy.layer in {LAYER_CORE, LAYER_ANCHOR, LAYER_DYNAMIC, LAYER_FAVORITE, LAYER_ARCHIVE}
+
+
+def can_moment_be_related_target(moment: dict[str, Any] | None, *, explicit_lookup: bool = False) -> bool:
+    if not can_moment_be_recall_context(moment):
+        return False
+    if is_context_only_section((moment or {}).get("section") if isinstance(moment, dict) else ""):
+        return False
+    policy = _parent_policy_for_moment(moment)
+    if policy.layer == LAYER_ARCHIVE:
+        return bool(explicit_lookup)
+    if policy.layer in {LAYER_DREAM, LAYER_SOURCE_RECORD, LAYER_RELATIONSHIP_WEATHER, LAYER_AFFECT_CONTEXT}:
+        return False
+    return policy.can_diffuse
 
 
 def is_context_only_section(section: object) -> bool:

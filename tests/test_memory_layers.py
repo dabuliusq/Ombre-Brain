@@ -3,19 +3,24 @@ from memory_layers import (
     DIRECT_EXPLICIT,
     DIRECT_EXPLICIT_OR_CONTENT,
     DIRECT_NEVER,
+    DIRECT_RESONANCE,
     LAYER_AFFECT_CONTEXT,
     LAYER_ANCHOR,
     LAYER_ARCHIVE,
     LAYER_CORE,
     LAYER_DYNAMIC,
     LAYER_FAVORITE,
+    LAYER_DREAM,
     LAYER_RELATIONSHIP_WEATHER,
     LAYER_SOURCE_RECORD,
     RENDER_DIRECT_AUTO,
     RENDER_FAVORITE,
     RENDER_WEATHER,
+    can_bucket_be_related_target,
     can_bucket_diffuse,
     can_moment_be_direct_seed,
+    can_moment_be_recall_context,
+    can_moment_be_related_target,
     infer_bucket_layer,
     infer_moment_layer,
     is_context_only_section,
@@ -77,7 +82,9 @@ def test_relationship_weather_never_becomes_direct_seed_or_diffusion_source():
     assert policy_for_bucket(bucket).direct_seed_policy == DIRECT_NEVER
     assert can_bucket_diffuse(bucket) is False
     assert infer_moment_layer(moment) == LAYER_RELATIONSHIP_WEATHER
+    assert can_moment_be_recall_context(moment) is False
     assert can_moment_be_direct_seed(moment) is False
+    assert can_moment_be_related_target(moment, explicit_lookup=True) is False
 
 
 def test_context_only_sections_override_bucket_layer():
@@ -91,7 +98,9 @@ def test_context_only_sections_override_bucket_layer():
         )
         assert infer_moment_layer(moment) == LAYER_AFFECT_CONTEXT
         assert policy_for_moment(moment).direct_seed_policy == DIRECT_NEVER
+        assert can_moment_be_recall_context(moment) is True
         assert can_moment_be_direct_seed(moment) is False
+        assert can_moment_be_related_target(moment, explicit_lookup=True) is False
 
     assert is_context_only_section("affect_anchor") is True
     assert is_context_only_section("body") is False
@@ -120,16 +129,38 @@ def test_archive_layer_only_allows_explicit_lookup():
     assert infer_bucket_layer(bucket) == LAYER_ARCHIVE
     assert policy_for_bucket(bucket).direct_seed_policy == DIRECT_EXPLICIT
     assert can_bucket_diffuse(bucket) is False
+    assert can_bucket_be_related_target(bucket) is False
+    assert can_bucket_be_related_target(bucket, explicit_lookup=True) is True
+    assert can_moment_be_recall_context(moment) is True
+    assert can_moment_be_related_target(moment) is False
+    assert can_moment_be_related_target(moment, explicit_lookup=True) is True
     assert can_moment_be_direct_seed(moment) is False
     assert can_moment_be_direct_seed(moment, explicit_lookup=True) is True
 
 
 def test_source_record_is_not_normal_memory_context():
     bucket = _bucket(type="source", tags=["raw_source"])
+    moment = _moment("body", bucket_type="source", tags=["raw_source"])
 
     assert infer_bucket_layer(bucket) == LAYER_SOURCE_RECORD
     assert policy_for_bucket(bucket).direct_seed_policy == DIRECT_NEVER
     assert can_bucket_diffuse(bucket) is False
+    assert can_bucket_be_related_target(bucket, explicit_lookup=True) is False
+    assert can_moment_be_recall_context(moment) is False
+    assert can_moment_be_related_target(moment, explicit_lookup=True) is False
+
+
+def test_dream_is_resonance_only_not_normal_direct_or_related_target():
+    bucket = _bucket(type="dream", tags=["night_dream"])
+    moment = _moment("body", bucket_type="dream", tags=["night_dream"])
+
+    assert infer_bucket_layer(bucket) == LAYER_DREAM
+    assert policy_for_bucket(bucket).direct_seed_policy == DIRECT_RESONANCE
+    assert can_moment_be_direct_seed(moment) is False
+    assert can_moment_be_direct_seed(moment, explicit_lookup=True) is False
+    assert can_moment_be_recall_context(moment) is False
+    assert can_bucket_be_related_target(bucket, explicit_lookup=True) is False
+    assert can_moment_be_related_target(moment, explicit_lookup=True) is False
 
 
 def test_default_dynamic_memory_is_direct_recallable_content():

@@ -43,7 +43,13 @@ from memory_relevance import (
     recall_search_query,
     relevance_multiplier,
 )
-from memory_layers import CONTEXT_ONLY_SECTIONS, is_context_only_section
+from memory_layers import (
+    CONTEXT_ONLY_SECTIONS,
+    can_bucket_be_related_target,
+    can_moment_be_direct_seed,
+    can_moment_be_recall_context,
+    can_moment_be_related_target,
+)
 from recall_policy import RecallPolicy
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
@@ -2374,7 +2380,7 @@ class GatewayService:
     def _recallable_moments(self, moments: list[dict]) -> list[dict]:
         return [
             moment for moment in moments
-            if (moment.get("metadata", {}) or {}).get("bucket_type") != "feel"
+            if can_moment_be_recall_context(moment)
         ]
 
     def _moments_by_bucket(self, moments: list[dict]) -> dict[str, list[dict]]:
@@ -2405,19 +2411,45 @@ class GatewayService:
                     return moment
         return moments[0] if moments else None
 
-    def _direct_representative_moment(self, moments: list[dict]) -> dict | None:
+    def _direct_representative_moment(
+        self,
+        moments: list[dict],
+        *,
+        explicit_lookup: bool = False,
+    ) -> dict | None:
         return self._representative_moment(
             [
                 moment for moment in self._recallable_moments(moments)
-                if not is_context_only_section(moment.get("section"))
+                if can_moment_be_direct_seed(moment, explicit_lookup=explicit_lookup)
             ]
         )
 
-    def _representative_moments_by_bucket(self, moments: list[dict]) -> dict[str, dict]:
+    def _related_representative_moment(
+        self,
+        moments: list[dict],
+        *,
+        explicit_lookup: bool = False,
+    ) -> dict | None:
+        return self._representative_moment(
+            [
+                moment for moment in self._recallable_moments(moments)
+                if can_moment_be_related_target(moment, explicit_lookup=explicit_lookup)
+            ]
+        )
+
+    def _representative_moments_by_bucket(
+        self,
+        moments: list[dict],
+        *,
+        explicit_lookup: bool = False,
+    ) -> dict[str, dict]:
         grouped = self._moments_by_bucket(moments)
         representatives = {}
         for bucket_id, bucket_moments in grouped.items():
-            representative = self._direct_representative_moment(bucket_moments)
+            representative = self._related_representative_moment(
+                bucket_moments,
+                explicit_lookup=explicit_lookup,
+            )
             if representative:
                 representatives[bucket_id] = representative
         return representatives
@@ -2433,7 +2465,10 @@ class GatewayService:
             target_bucket = str(edge.get("target") or edge.get("target_memory_id") or "").strip()
             if not source_bucket or not target_bucket:
                 continue
-            target = self._direct_representative_moment(grouped.get(target_bucket, []))
+            target = self._related_representative_moment(
+                grouped.get(target_bucket, []),
+                explicit_lookup=True,
+            )
             if not target:
                 continue
             relation_type = str(edge.get("relation_type") or edge.get("type") or "relates_to")
@@ -2442,7 +2477,7 @@ class GatewayService:
             except (TypeError, ValueError):
                 confidence = 0.5
             for source in grouped.get(source_bucket, []):
-                if source.get("section") in MOMENT_TEMPERATURE_SECTIONS:
+                if not can_moment_be_direct_seed(source):
                     continue
                 edges.append(
                     {
@@ -2498,10 +2533,11 @@ class GatewayService:
             limit=max(20, self.dynamic_top_k * 2, self.inject_max_cards * 8),
             bucket_boosts=bucket_boosts,
         )
+        explicit_lookup = self._query_explicitly_requests_caution_memory(query)
         candidates = [
             moment for moment in candidates
             if str(moment.get("bucket_id") or "") in eligible_ids
-            and moment.get("section") not in MOMENT_TEMPERATURE_SECTIONS
+            and can_moment_be_direct_seed(moment, explicit_lookup=explicit_lookup)
         ]
         candidates = self._apply_relevance_to_moment_candidates(query, candidates)
         candidates = await self._rerank_moment_candidates(query, candidates)
@@ -2527,7 +2563,10 @@ class GatewayService:
                 None,
             )
             if not moment:
-                moment = self._representative_moment(grouped_moments.get(bucket_id, []))
+                moment = self._direct_representative_moment(
+                    grouped_moments.get(bucket_id, []),
+                    explicit_lookup=explicit_lookup,
+                )
             if moment and bucket_id not in seen_buckets:
                 selected.append(moment)
                 seen_buckets.add(bucket_id)
@@ -2932,6 +2971,7 @@ class GatewayService:
         parts = []
         related_max_chars = 90 if self._query_wants_body_chain(query_text) else 180
         allow_caution_paths = self._allows_caution_diffusion(query_text, context_mode)
+        allow_archive_targets = allow_caution_paths or self._query_explicitly_requests_caution_memory(query_text)
         used_bucket_ids = {
             str(moment.get("bucket_id") or "")
             for moment in seed_moments
@@ -2968,7 +3008,10 @@ class GatewayService:
             if float(edge.get("confidence", 0.0)) >= self.edge_min_confidence
         ]
         moment_map = self._moment_diffusion_map(moments)
-        representatives = self._representative_moments_by_bucket(moments)
+        representatives = self._representative_moments_by_bucket(
+            moments,
+            explicit_lookup=allow_archive_targets,
+        )
         hits = diffuse_memory(
             self._seed_scores_for_moments(seed_moments),
             filtered_edges,
@@ -2985,12 +3028,15 @@ class GatewayService:
             bucket_id = str(moment.get("bucket_id") or "")
             if bucket_id in used_bucket_ids:
                 continue
-            if moment.get("section") in MOMENT_TEMPERATURE_SECTIONS:
+            if not can_moment_be_related_target(moment, explicit_lookup=allow_archive_targets):
                 replacement = representatives.get(bucket_id)
-                if replacement:
-                    moment = replacement
-                    if moment.get("moment_id") in seen_moment_ids:
-                        continue
+                if not replacement:
+                    continue
+                moment = replacement
+                if moment.get("moment_id") in seen_moment_ids:
+                    continue
+                if not can_moment_be_related_target(moment, explicit_lookup=allow_archive_targets):
+                    continue
             if (
                 self._query_requires_topic_evidence(query_text)
                 and not self._query_wants_body_chain(query_text)
@@ -3037,7 +3083,7 @@ class GatewayService:
             bucket_id = str(moment.get("bucket_id") or "")
             if not bucket_id or bucket_id in seen:
                 continue
-            if moment.get("section") in MOMENT_TEMPERATURE_SECTIONS:
+            if not can_moment_be_direct_seed(moment):
                 continue
             if should_suppress_context_candidate(query, moment, self.relevance_options):
                 continue
@@ -3444,10 +3490,13 @@ class GatewayService:
             return ""
         remaining = self.related_memory_budget
         parts = []
+        allow_archive_targets = self._query_explicitly_requests_caution_memory(query_text)
         for hit in hits:
             target_id = hit.bucket_id
             target = bucket_map.get(target_id)
             if not target:
+                continue
+            if not can_bucket_be_related_target(target, explicit_lookup=allow_archive_targets):
                 continue
             if (
                 self._query_requires_topic_evidence(query_text)

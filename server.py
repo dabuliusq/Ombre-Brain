@@ -93,7 +93,10 @@ from memory_relevance import (
 )
 from memory_layers import (
     CONTEXT_ONLY_SECTIONS,
-    is_context_only_section,
+    can_bucket_be_related_target,
+    can_moment_be_direct_seed,
+    can_moment_be_recall_context,
+    can_moment_be_related_target,
     normalize_write_classification,
 )
 from recall_policy import RecallPolicy
@@ -1649,6 +1652,7 @@ async def _build_mcp_diffused_memory_block(
     parts = []
     seen_targets = set()
     remaining = token_budget
+    allow_archive_targets = _query_explicitly_requests_archive_memory(query_text)
     for hit in hits:
         target_id = hit.bucket_id
         if not target_id or target_id in seen_targets:
@@ -1658,7 +1662,7 @@ async def _build_mcp_diffused_memory_block(
         if not target:
             continue
         meta = target.get("metadata", {})
-        if meta.get("type") == "feel":
+        if not can_bucket_be_related_target(target, explicit_lookup=allow_archive_targets):
             continue
         if (
             query_text
@@ -1761,14 +1765,21 @@ def _moments_by_bucket(moments: list[dict]) -> dict[str, list[dict]]:
 def _recallable_moments(moments: list[dict]) -> list[dict]:
     return [
         moment for moment in moments
-        if (moment.get("metadata", {}) or {}).get("bucket_type") != "feel"
+        if can_moment_be_recall_context(moment)
     ]
 
 
-def _direct_recallable_moments(moments: list[dict]) -> list[dict]:
+def _direct_recallable_moments(moments: list[dict], *, explicit_lookup: bool = False) -> list[dict]:
     return [
         moment for moment in _recallable_moments(moments)
-        if not is_context_only_section(moment.get("section"))
+        if can_moment_be_direct_seed(moment, explicit_lookup=explicit_lookup)
+    ]
+
+
+def _related_recallable_moments(moments: list[dict], *, explicit_lookup: bool = False) -> list[dict]:
+    return [
+        moment for moment in _recallable_moments(moments)
+        if can_moment_be_related_target(moment, explicit_lookup=explicit_lookup)
     ]
 
 
@@ -1791,8 +1802,12 @@ def _representative_moment(moments: list[dict]) -> dict | None:
     return moments[0] if moments else None
 
 
-def _direct_representative_moment(moments: list[dict]) -> dict | None:
-    return _representative_moment(_direct_recallable_moments(moments))
+def _direct_representative_moment(moments: list[dict], *, explicit_lookup: bool = False) -> dict | None:
+    return _representative_moment(_direct_recallable_moments(moments, explicit_lookup=explicit_lookup))
+
+
+def _related_representative_moment(moments: list[dict], *, explicit_lookup: bool = False) -> dict | None:
+    return _representative_moment(_related_recallable_moments(moments, explicit_lookup=explicit_lookup))
 
 
 def _bucket_edges_as_moment_edges(bucket_edges: list[dict], grouped: dict[str, list[dict]]) -> list[dict]:
@@ -1802,7 +1817,7 @@ def _bucket_edges_as_moment_edges(bucket_edges: list[dict], grouped: dict[str, l
         target_bucket = str(edge.get("target") or edge.get("target_memory_id") or "").strip()
         if not source_bucket or not target_bucket:
             continue
-        target = _direct_representative_moment(grouped.get(target_bucket, []))
+        target = _related_representative_moment(grouped.get(target_bucket, []), explicit_lookup=True)
         if not target:
             continue
         relation_type = str(edge.get("relation_type") or edge.get("type") or "relates_to")
@@ -1811,7 +1826,7 @@ def _bucket_edges_as_moment_edges(bucket_edges: list[dict], grouped: dict[str, l
         except (TypeError, ValueError):
             confidence = 0.5
         for source in grouped.get(source_bucket, []):
-            if source.get("section") in MOMENT_TEMPERATURE_SECTIONS:
+            if not can_moment_be_direct_seed(source):
                 continue
             edges.append(
                 {
@@ -2682,11 +2697,33 @@ def _specific_query_terms(query: str) -> list[str]:
     return _recall_policy().specific_query_terms(query)
 
 
-def _representative_moments_by_bucket(moments: list[dict]) -> dict[str, dict]:
+def _query_explicitly_requests_archive_memory(query: str) -> bool:
+    if not str(query or "").strip():
+        return False
+    options = _recall_relevance_options()
+    if query_has_facet(query, "old_or_resolved", options):
+        return True
+    text = " ".join(str(query or "").lower().split())
+    return any(
+        marker in text
+        for marker in (
+            "冲突", "吵架", "争吵", "矛盾", "误会", "旧版本", "旧版", "旧链",
+            "旧窗口", "已解决", "过期", "归档", "conflict", "fight",
+            "argument", "old version", "old path", "old chain", "resolved",
+            "archived", "deprecated", "obsolete",
+        )
+    )
+
+
+def _representative_moments_by_bucket(
+    moments: list[dict],
+    *,
+    explicit_lookup: bool = False,
+) -> dict[str, dict]:
     grouped = _moments_by_bucket(moments)
     representatives = {}
     for bucket_id, bucket_moments in grouped.items():
-        representative = _direct_representative_moment(bucket_moments)
+        representative = _related_representative_moment(bucket_moments, explicit_lookup=explicit_lookup)
         if representative:
             representatives[bucket_id] = representative
     return representatives
@@ -2723,8 +2760,12 @@ async def _build_mcp_moment_diffused_memory_block(
         edge for edge in edges
         if float(edge.get("confidence", 0.0)) >= min_confidence
     ]
+    allow_archive_targets = _query_explicitly_requests_archive_memory(query_text)
     moment_map = _moment_diffusion_map(moments)
-    representatives = _representative_moments_by_bucket(moments)
+    representatives = _representative_moments_by_bucket(
+        moments,
+        explicit_lookup=allow_archive_targets,
+    )
     exclude_bucket_ids = set(exclude_bucket_ids or set())
     hits = diffuse_memory(
         _seed_scores_for_moments(seed_moments),
@@ -2745,12 +2786,15 @@ async def _build_mcp_moment_diffused_memory_block(
         bucket_id = str(moment.get("bucket_id") or "")
         if bucket_id in exclude_bucket_ids:
             continue
-        if moment.get("section") in MOMENT_TEMPERATURE_SECTIONS:
+        if not can_moment_be_related_target(moment, explicit_lookup=allow_archive_targets):
             replacement = representatives.get(bucket_id)
-            if replacement:
-                moment = replacement
-                if moment.get("moment_id") in seen:
-                    continue
+            if not replacement:
+                continue
+            moment = replacement
+            if moment.get("moment_id") in seen:
+                continue
+            if not can_moment_be_related_target(moment, explicit_lookup=allow_archive_targets):
+                continue
         block = _format_related_moment(
             moment,
             path_has_caution(hit.best_path),
@@ -3419,7 +3463,8 @@ async def breath(
         limit=max(max_results, 20),
         bucket_boosts=bucket_boosts,
     )
-    moment_candidates = _direct_recallable_moments(moment_candidates)
+    explicit_lookup = _query_explicitly_requests_archive_memory(query)
+    moment_candidates = _direct_recallable_moments(moment_candidates, explicit_lookup=explicit_lookup)
     pre_gate_moment_candidates = list(moment_candidates)
     gated_moment_candidates = _apply_recall_relevance_gate(query, moment_candidates)
     moment_candidates = gated_moment_candidates

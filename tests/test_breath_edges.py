@@ -234,7 +234,7 @@ async def test_surfacing_appends_related_memory_for_returned_dynamic_bucket(patc
     patch_breath(
         [
             _bucket("A", "A actual surface", score=9.0),
-            _bucket("B", "B related target", resolved=True),
+            _bucket("B", "B related target", bucket_type="permanent"),
         ],
         edges=[{"source": "A", "target": "B", "relation_type": "supports", "confidence": 0.9}],
     )
@@ -274,7 +274,7 @@ async def test_search_appends_related_memory_and_touches_only_matched_bucket(pat
     bucket_mgr = patch_breath(
         [
             _bucket("A", "A search hit", score=9.0),
-            _bucket("B", "B related target", resolved=True),
+            _bucket("B", "B related target"),
         ],
         search_ids=["A"],
         edges=[{"source": "A", "target": "B", "relation_type": "updates", "confidence": 0.9}],
@@ -290,6 +290,48 @@ async def test_search_appends_related_memory_and_touches_only_matched_bucket(pat
     assert "当时语境" not in result
     assert server.memory_moment_store.list_for_bucket("B")
     assert bucket_mgr.touched == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_search_skips_archived_related_target_for_normal_query(patch_breath):
+    import server
+
+    patch_breath(
+        [
+            _bucket("A", "A search hit", score=9.0),
+            _bucket("B", "B archived related target", resolved=True),
+        ],
+        search_ids=["A"],
+        edges=[{"source": "A", "target": "B", "relation_type": "supports", "confidence": 0.9}],
+    )
+
+    result = await server.breath(query="A", max_tokens=50)
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:A]" in result
+    assert "=== 联想浮现 ===" not in result
+    assert "[bucket_id:B]" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_allows_archived_related_target_for_explicit_old_query(patch_breath):
+    import server
+
+    patch_breath(
+        [
+            _bucket("A", "A search hit 旧版链入口", score=9.0),
+            _bucket("B", "旧版 B archived related target", resolved=True),
+        ],
+        search_ids=["A"],
+        edges=[{"source": "A", "target": "B", "relation_type": "supports", "confidence": 0.9}],
+    )
+
+    result = await server.breath(query="旧版 A", max_tokens=120)
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:A]" in result
+    assert "=== 联想浮现 ===" in result
+    assert "[bucket_id:B]" in result
 
 
 @pytest.mark.asyncio
@@ -1486,7 +1528,7 @@ async def test_incoming_edge_renders_left_arrow_from_search_source(patch_breath)
     patch_breath(
         [
             _bucket("A", "A search hit", score=9.0),
-            _bucket("B", "B incoming source", resolved=True),
+            _bucket("B", "B incoming source"),
         ],
         search_ids=["A"],
         edges=[{"source": "B", "target": "A", "relation_type": "supports", "confidence": 0.9}],

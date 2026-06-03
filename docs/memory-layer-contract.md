@@ -101,6 +101,16 @@ Context-only sections:
 
 These can color a reliable memory, but they cannot prove a direct hit by themselves.
 
+## Runtime Gates
+
+The runtime answers "which layer is this?" with `memory_layers.py`, then applies three separate gates:
+
+- Direct seed gate: only admitted bucket body/title moments can prove a direct recall. Dream resonance, source records, relationship weather, and context-only sections cannot.
+- Recall context gate: comments, affect anchors, and favorite reasons may stay indexed as context for their parent bucket, so they can appear beside a reliable direct hit.
+- Related target gate: diffused memory must be summary-only and must pass the target layer policy. Archive/resolved/digested buckets stay hidden in normal related recall, but can return as old-memory summary when the query explicitly asks for old, archived, conflict, or resolved material.
+
+This separation is important. A moment can be searchable context without being allowed to prove the current topic.
+
 ## Injection Order
 
 Gateway dynamic context should stay quiet and ordered:
