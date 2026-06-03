@@ -97,8 +97,8 @@ def test_build_cross_bucket_edges_ignores_weak_metadata_only_overlap():
 def test_terms_and_metadata_filters_drop_worker_noise():
     moment = _moment(
         "worker-noise",
-        "2026-05-10 commitment todo 0x5a 小红书",
-        tags=["commitment", "todo", "flavor_婚礼", "relationship_identity"],
+        "2026-05-10 commitment todo 0x5a 小雨与 小红书",
+        tags=["commitment", "todo", "flavor_婚礼", "haven_favorite", "小雨", "relationship_identity"],
         domain=["恋爱"],
         facets={"old_or_resolved": 0.9, "relationship_identity": 0.8},
     )
@@ -114,8 +114,16 @@ def test_terms_and_metadata_filters_drop_worker_noise():
     assert "todo" not in indexed[0].terms
     assert "flavor_婚礼" not in indexed[0].terms
     assert "0x5a" not in indexed[0].terms
+    assert "小雨与" not in indexed[0].terms
     assert indexed[0].tags == {"relationship_identity"}
     assert indexed[0].facets == {"relationship_identity"}
+
+
+def test_context_term_with_real_content_survives_filter():
+    options = build_moment_graph.memory_relevance_options_from_config()
+
+    assert build_moment_graph.is_context_glue_term("小雨与", options.context_terms)
+    assert not build_moment_graph.is_context_glue_term("喜欢看haven闹脾气", options.context_terms)
 
 
 def test_replace_generated_edges_preserves_bucket_context_edges(test_config):

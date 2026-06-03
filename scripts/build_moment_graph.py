@@ -41,6 +41,8 @@ WEAK_TERMS = {
     "resolved",
     "digested",
     "archive",
+    "favorite",
+    "haven_favorite",
     "记忆",
     "回忆",
     "上下文",
@@ -59,6 +61,20 @@ WEAK_TERMS = {
 }
 WEAK_TERM_PREFIXES = ("flavor_",)
 WEAK_GRAPH_FACETS = {"old_or_resolved"}
+CONTEXT_GLUE_TERMS = {
+    "与",
+    "和",
+    "跟",
+    "告诉",
+    "告诉我",
+    "说",
+    "说过",
+    "让我",
+    "让",
+    "对我",
+    "向我",
+    "给我",
+}
 
 
 @dataclass(frozen=True)
@@ -165,8 +181,8 @@ def index_moments(
             continue
         terms = moment_terms(moment, options)
         facets = moment_facets(moment)
-        tags = metadata_set(moment, "bucket_tags")
-        domains = metadata_set(moment, "bucket_domain")
+        tags = metadata_set(moment, "bucket_tags", options)
+        domains = metadata_set(moment, "bucket_domain", options)
         if not terms and not facets:
             continue
         indexed.append(IndexedMoment(moment, terms, facets, tags, domains))
@@ -260,7 +276,11 @@ def moment_terms(moment: dict[str, Any], options: MemoryRelevanceOptions) -> set
         ]
     )
     terms = content_terms_for_query(fields, options)
-    return {normalize_term(term) for term in terms if keep_term(term)}
+    return {
+        normalize_term(term)
+        for term in terms
+        if keep_term(term) and not is_context_glue_term(term, options.context_terms)
+    }
 
 
 def moment_facets(moment: dict[str, Any]) -> set[str]:
@@ -282,7 +302,11 @@ def moment_facets(moment: dict[str, Any]) -> set[str]:
     return facets
 
 
-def metadata_set(moment: dict[str, Any], key: str) -> set[str]:
+def metadata_set(
+    moment: dict[str, Any],
+    key: str,
+    options: MemoryRelevanceOptions,
+) -> set[str]:
     meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
     value = meta.get(key)
     if isinstance(value, str):
@@ -291,7 +315,11 @@ def metadata_set(moment: dict[str, Any], key: str) -> set[str]:
         items = list(value)
     else:
         items = []
-    return {normalize_term(item) for item in items if keep_metadata_term(item)}
+    return {
+        normalize_term(item)
+        for item in items
+        if keep_metadata_term(item) and not is_context_glue_term(item, options.context_terms)
+    }
 
 
 def preferred_section(moment: dict[str, Any]) -> bool:
@@ -344,6 +372,20 @@ def is_anchor_term(term: str) -> bool:
         return True
     if re.fullmatch(r"[\u4e00-\u9fff]{3,}", value):
         return True
+    return False
+
+
+def is_context_glue_term(term: Any, context_terms: tuple[str, ...]) -> bool:
+    value = normalize_term(term)
+    if not value:
+        return False
+    for context_term in context_terms or ():
+        context = normalize_term(context_term)
+        if not context or context not in value:
+            continue
+        residue = value.replace(context, "")
+        if not residue or residue in CONTEXT_GLUE_TERMS or len(residue) <= 1:
+            return True
     return False
 
 
