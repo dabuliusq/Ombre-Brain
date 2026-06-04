@@ -980,6 +980,7 @@ df0a41d Expose recall modes in dashboard config
 
 - Gateway 冷却：`cooldown_hours`、`skip_recent_rounds`
 - Recent Context：`recent_context_cooldown_hours`、`recent_context_reentry_idle_hours`、`recent_context_budget`
+- Query 旧记忆随机回响：`recall.query_resurface_enabled`
 - 直命中展示：`direct_render_mode=auto|compact|full`
 - 召回对照档：`retrieval_mode=graph|bucket`
 - 图扩散：`memory_diffusion.enabled/top_k/min_activation`
@@ -1020,3 +1021,12 @@ recall:
 - `recent_context_budget`：最近上下文预算，默认 `300`；设 `0` 关闭这块自动注入。
 
 这组参数只控制 `Recent Context`，不会影响可靠直命中 `Recalled Memory` 和扩散 `Diffused Memory`。
+
+## 2026-06-04 追加：Dashboard 可调 query 旧记忆随机回响
+
+`recall.query_resurface_enabled` 已接入 Dashboard 配置页和 `/api/config` 持久化。默认仍是 `false`：
+
+- `false`：有 query 的 `breath()` 只返回可靠直命中、联想浮现和梦境，不随机追加 `--- 久未碰过 ---`。
+- `true`：恢复旧行为，直命中稀疏且没有 related 时，query breath 可以按概率追加久未碰过的旧记忆。
+
+这不是 Gateway 注入参数，保存后 `breath()` 当前进程立即生效；旧记忆抽卡仍更推荐显式调用 `resurface()`。

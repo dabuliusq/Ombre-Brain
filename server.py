@@ -6095,6 +6095,7 @@ async def api_config_get(request):
     dehy = config.get("dehydration", {})
     emb = config.get("embedding", {})
     gateway_cfg = config.get("gateway", {}) if isinstance(config.get("gateway", {}), dict) else {}
+    recall_cfg = config.get("recall", {}) if isinstance(config.get("recall", {}), dict) else {}
     diffusion_options = diffusion_options_from_config(config)
     dream_cfg = config.get("dream", {}) if isinstance(config.get("dream", {}), dict) else {}
     reflection_cfg = config.get("reflection", {}) if isinstance(config.get("reflection", {}), dict) else {}
@@ -6122,6 +6123,9 @@ async def api_config_get(request):
             "recent_context_budget": gateway_cfg.get("recent_context_budget", 300),
             "direct_render_mode": _normalize_direct_render_mode(gateway_cfg.get("direct_render_mode", "auto")),
             "retrieval_mode": _normalize_retrieval_mode(gateway_cfg.get("retrieval_mode", "graph")),
+        },
+        "recall": {
+            "query_resurface_enabled": _bool_value(recall_cfg.get("query_resurface_enabled"), False),
         },
         "memory_diffusion": {
             "enabled": diffusion_options.enabled,
@@ -6333,6 +6337,14 @@ async def api_config_update(request):
         if gateway_hot_update_body:
             gateway_hot_update_payload["gateway"] = gateway_hot_update_body
 
+    # --- Recall behavior config ---
+    if "recall" in body:
+        r = body["recall"]
+        recall_cfg = config.setdefault("recall", {})
+        if "query_resurface_enabled" in r:
+            recall_cfg["query_resurface_enabled"] = _bool_value(r["query_resurface_enabled"], False)
+            updated.append("recall.query_resurface_enabled")
+
     # --- Memory diffusion config ---
     if "memory_diffusion" in body:
         diffusion_payload = _memory_diffusion_dashboard_config(body["memory_diffusion"])
@@ -6435,6 +6447,14 @@ async def api_config_update(request):
                     sc_gateway["direct_render_mode"] = _normalize_direct_render_mode(body["gateway"]["direct_render_mode"])
                 if "retrieval_mode" in body["gateway"]:
                     sc_gateway["retrieval_mode"] = _normalize_retrieval_mode(body["gateway"]["retrieval_mode"])
+
+            if "recall" in body:
+                sc_recall = save_config.setdefault("recall", {})
+                if "query_resurface_enabled" in body["recall"]:
+                    sc_recall["query_resurface_enabled"] = _bool_value(
+                        body["recall"]["query_resurface_enabled"],
+                        False,
+                    )
 
             if "memory_diffusion" in body:
                 sc_diffusion = save_config.setdefault("memory_diffusion", {})

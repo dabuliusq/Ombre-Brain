@@ -1791,6 +1791,14 @@
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">graph 是 p0 图召回；bucket 是接近 main 的直命中对照档</div>
       <div class="config-row">
+        <label>旧记忆随机</label>
+        <select id="cfg-query-resurface-enabled">
+          <option value="false">关闭</option>
+          <option value="true">开启</option>
+        </select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认关闭；开启后 query breath 在直命中稀疏时可能追加久未碰过的旧记忆</div>
+      <div class="config-row">
         <label>图扩散</label>
         <select id="cfg-diffusion-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
       </div>
@@ -3745,6 +3753,8 @@ async function loadConfig() {
       (cfg.gateway && cfg.gateway.recent_context_budget) ?? 300;
     document.getElementById('cfg-direct-render-mode').value = (cfg.gateway && cfg.gateway.direct_render_mode) || 'auto';
     document.getElementById('cfg-retrieval-mode').value = (cfg.gateway && cfg.gateway.retrieval_mode) || 'graph';
+    document.getElementById('cfg-query-resurface-enabled').value =
+      (cfg.recall && cfg.recall.query_resurface_enabled) ? 'true' : 'false';
     var diffusion = cfg.memory_diffusion || {};
     document.getElementById('cfg-diffusion-enabled').value = diffusion.enabled === false ? 'false' : 'true';
     document.getElementById('cfg-diffusion-topk').value = diffusion.top_k ?? 4;
@@ -3812,6 +3822,9 @@ async function saveConfig(persist) {
       recent_context_budget: numberValue('cfg-recent-context-budget', 300),
       direct_render_mode: document.getElementById('cfg-direct-render-mode').value,
       retrieval_mode: document.getElementById('cfg-retrieval-mode').value,
+    },
+    recall: {
+      query_resurface_enabled: document.getElementById('cfg-query-resurface-enabled').value === 'true',
     },
     memory_diffusion: {
       enabled: document.getElementById('cfg-diffusion-enabled').value === 'true',

@@ -1796,6 +1796,10 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
         "config",
         {
             **server.config,
+            "recall": {
+                **server.config.get("recall", {}),
+                "query_resurface_enabled": True,
+            },
             "gateway": {
                 **server.config.get("gateway", {}),
                 "cooldown_hours": 2.5,
@@ -1819,6 +1823,7 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
     assert payload["gateway"]["recent_context_budget"] == 240
     assert payload["gateway"]["direct_render_mode"] == "full"
     assert payload["gateway"]["retrieval_mode"] == "bucket"
+    assert payload["recall"]["query_resurface_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -1874,6 +1879,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
         "  recent_context_cooldown_hours: 8\n  recent_context_reentry_idle_hours: 24\n"
         "  recent_context_budget: 300\n  direct_render_mode: auto\n  retrieval_mode: graph\n"
+        "recall:\n  query_resurface_enabled: false\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
         "reflection:\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
@@ -1883,6 +1889,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
         "  recent_context_cooldown_hours: 8\n  recent_context_reentry_idle_hours: 24\n"
         "  recent_context_budget: 300\n  direct_render_mode: auto\n  retrieval_mode: graph\n"
+        "recall:\n  query_resurface_enabled: false\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
         "reflection:\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
@@ -1906,6 +1913,9 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "recent_context_budget": 300,
             "direct_render_mode": "auto",
             "retrieval_mode": "graph",
+        },
+        "recall": {
+            "query_resurface_enabled": False,
         },
         "memory_diffusion": {
             "enabled": True,
@@ -1955,6 +1965,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                     "direct_render_mode": "full",
                     "retrieval_mode": "bucket",
                 },
+                "recall": {"query_resurface_enabled": True},
                 "memory_diffusion": {
                     "enabled": True,
                     "top_k": 3,
@@ -1988,6 +1999,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["gateway"]["recent_context_budget"] == 260
     assert runtime_config["gateway"]["direct_render_mode"] == "full"
     assert runtime_config["gateway"]["retrieval_mode"] == "bucket"
+    assert runtime_config["recall"]["query_resurface_enabled"] is True
     assert hot_update_calls[-1] == {
         "gateway": {
             "cooldown_hours": 6,
