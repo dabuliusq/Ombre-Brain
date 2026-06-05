@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 from word_map import WordMapStore
 
 
@@ -106,3 +108,14 @@ def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
     assert "profile_fact" not in terms
     assert "flavor_soft" not in terms
     assert "咖啡风味" in terms
+
+
+def test_config_example_exposes_empty_word_map_and_identity_semantics():
+    config = yaml.safe_load(Path("config.example.yaml").read_text(encoding="utf-8"))
+
+    assert config["word_map"]["enabled"] is False
+    assert config["word_map"]["private_terms"] == []
+    assert config["identity_semantics"]["enabled"] is False
+    assert config["identity_semantics"]["private_config_path"] == ""
+    assert "canonical" not in config["identity_semantics"]
+    assert "aliases" not in config["identity_semantics"]

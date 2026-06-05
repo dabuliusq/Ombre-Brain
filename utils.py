@@ -97,6 +97,21 @@ def load_config(config_path: str = None) -> dict:
             "explicit_vector_min_score": 0.55,
             "vague_top_k": 50,
         },
+        "word_map": {
+            "enabled": False,
+            "max_terms_per_bucket": 16,
+            "edge_top_k": 10,
+            "min_term_len": 2,
+            "stopwords": [],
+            "private_terms": [],
+            "stopword_prefixes": [],
+        },
+        "identity_semantics": {
+            "enabled": False,
+            "private_config_path": "",
+            "min_confidence": 0.78,
+            "evidence_tags": ["profile_fact", "haven_favorite", "favorite_memory"],
+        },
         "moment_annotations": {
             "enabled": True,
             "max_summary_chars": 160,
