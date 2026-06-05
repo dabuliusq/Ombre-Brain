@@ -1143,6 +1143,7 @@ async def test_api_profile_facts_lists_evidence_bound_facts(monkeypatch, bucket_
             "buckets_dir": str(tmp_path / "buckets"),
         }
     )
+    edge_store.add_edge(profile_id, evidence_id, "evidenced_by", confidence=0.96)
 
     monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
     monkeypatch.setattr(server, "memory_edge_store", edge_store)
@@ -1165,6 +1166,7 @@ async def test_api_profile_facts_lists_evidence_bound_facts(monkeypatch, bucket_
     assert fact["evidence"][0]["bucket_id"] == evidence_id
     assert fact["evidence"][0]["moment_id"] == "m1"
     assert fact["evidence"][0]["name"] == "Haven 的生日蛋糕"
+    assert len(fact["evidence"]) == 1
 
 
 @pytest.mark.asyncio

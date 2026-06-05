@@ -1044,12 +1044,19 @@ def _profile_fact_evidence(bucket: dict) -> list[dict]:
     except Exception:
         pass
 
+    bucket_ids_with_moment = {
+        str(item.get("bucket_id") or "").strip()
+        for item in rows
+        if str(item.get("bucket_id") or "").strip() and str(item.get("moment_id") or "").strip()
+    }
     seen: set[tuple[str, str]] = set()
     result: list[dict] = []
     for item in rows:
         bucket_id = str(item.get("bucket_id") or "").strip()
         moment_id = str(item.get("moment_id") or "").strip()
         if not bucket_id:
+            continue
+        if not moment_id and bucket_id in bucket_ids_with_moment:
             continue
         key = (bucket_id, moment_id)
         if key in seen:
