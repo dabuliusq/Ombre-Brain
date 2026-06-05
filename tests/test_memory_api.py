@@ -1852,6 +1852,61 @@ async def test_config_get_reports_effective_dream_engine_values(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_get_reports_persona_and_reflection_api_values(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(
+        server,
+        "config",
+        {
+            **server.config,
+            "reflection": {
+                **server.config.get("reflection", {}),
+                "auto_enabled": False,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "persona_engine",
+        SimpleNamespace(
+            enabled=False,
+            model="persona-model",
+            base_url="https://persona.example",
+            api_key="persona-secret",
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "reflection_engine",
+        SimpleNamespace(
+            enabled=True,
+            auto_enabled=False,
+            daily_enabled=True,
+            memory_affect_anchor_enabled=True,
+            relationship_weather_affect_anchor_enabled=False,
+            model="reflection-model",
+            base_url="https://reflection.example",
+            api_key="reflection-secret",
+        ),
+    )
+
+    response = await server.api_config_get(DummyRequest())
+    payload = json.loads(response.body)
+
+    assert payload["persona"]["enabled"] is False
+    assert payload["persona"]["model"] == "persona-model"
+    assert payload["persona"]["base_url"] == "https://persona.example"
+    assert payload["persona"]["api_key_masked"] == "pers...cret"
+    assert payload["reflection"]["enabled"] is True
+    assert payload["reflection"]["auto_enabled"] is False
+    assert payload["reflection"]["model"] == "reflection-model"
+    assert payload["reflection"]["base_url"] == "https://reflection.example"
+    assert payload["reflection"]["api_key_masked"] == "refl...cret"
+
+
+@pytest.mark.asyncio
 async def test_config_get_reports_reflection_affect_anchor_switches(monkeypatch):
     import server
 
@@ -1965,6 +2020,99 @@ async def test_config_get_reports_memory_diffusion_settings(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_config, tmp_path):
+    import server
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("OMBRE_API_KEY=old\nUNCHANGED=value\n", encoding="utf-8")
+    cfg = {
+        **test_config,
+        "persona": {
+            **test_config["persona"],
+            "enabled": True,
+            "model": "old-persona",
+            "base_url": "https://old-persona.example",
+        },
+        "reflection": {
+            **test_config.get("reflection", {}),
+            "enabled": True,
+            "auto_enabled": True,
+            "model": "old-reflection",
+            "base_url": "https://old-reflection.example",
+        },
+        "dream": {
+            **test_config.get("dream", {}),
+            "enabled": True,
+            "auto_enabled": True,
+            "model": "old-dream",
+            "base_url": "https://old-dream.example",
+        },
+    }
+    hot_update_calls = []
+
+    async def fake_hot_update(body):
+        hot_update_calls.append(body)
+        return "gateway_hot_reloaded"
+
+    monkeypatch.setenv("OMBRE_ENV_PATH", str(env_path))
+    for key in (
+        "OMBRE_API_KEY",
+        "OMBRE_EMBEDDING_API_KEY",
+        "OMBRE_PERSONA_API_KEY",
+        "OMBRE_REFLECTION_API_KEY",
+        "OMBRE_DREAM_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(server, "config", cfg)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(server, "_hot_update_gateway_config", fake_hot_update)
+
+    response = await server.api_config_update(
+        DummyRequest(
+            {
+                "dehydration": {"api_key": "dehy new"},
+                "embedding": {"api_key": "emb-new"},
+                "persona": {
+                    "enabled": False,
+                    "model": "persona-new",
+                    "base_url": "https://persona-new.example",
+                    "api_key": "persona-new-key",
+                },
+                "reflection": {
+                    "enabled": False,
+                    "auto_enabled": False,
+                    "model": "reflection-new",
+                    "base_url": "https://reflection-new.example",
+                    "api_key": "reflection-new-key",
+                },
+                "dream": {
+                    "enabled": False,
+                    "model": "dream-new",
+                    "base_url": "https://dream-new.example",
+                    "api_key": "dream-new-key",
+                },
+                "persist_env": True,
+            }
+        )
+    )
+    payload = json.loads(response.body)
+    env_text = env_path.read_text(encoding="utf-8")
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert "persisted_to_env" in payload["updated"]
+    assert "OMBRE_API_KEY=\"dehy new\"" in env_text
+    assert "OMBRE_EMBEDDING_API_KEY=emb-new" in env_text
+    assert "OMBRE_PERSONA_API_KEY=persona-new-key" in env_text
+    assert "OMBRE_REFLECTION_API_KEY=reflection-new-key" in env_text
+    assert "OMBRE_DREAM_API_KEY=dream-new-key" in env_text
+    assert "UNCHANGED=value" in env_text
+    assert os.environ["OMBRE_PERSONA_API_KEY"] == "persona-new-key"
+    assert hot_update_calls[-1]["persona"]["enabled"] is False
+    assert hot_update_calls[-1]["persona"]["api_key"] == "persona-new-key"
+
+
+@pytest.mark.asyncio
 async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_config, tmp_path):
     import server
 
@@ -1972,6 +2120,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     runtime_path = tmp_path / "state" / "config.runtime.yaml"
     runtime_path.parent.mkdir(exist_ok=True)
     config_path.write_text(
+        "persona:\n  enabled: true\n  model: persona-old\n  base_url: https://persona-old.example\n"
         "dream:\n  model: yaml-old\n"
         "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
         "  recent_context_cooldown_hours: 8\n  recent_context_reentry_idle_hours: 24\n"
@@ -1980,10 +2129,11 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         "  direct_render_mode: auto\n  retrieval_mode: graph\n"
         "recall:\n  query_resurface_enabled: false\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
-        "reflection:\n  memory_affect_anchor_enabled: true\n",
+        "reflection:\n  enabled: true\n  auto_enabled: true\n  model: reflection-old\n  base_url: https://reflection-old.example\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
     runtime_path.write_text(
+        "persona:\n  enabled: true\n  model: persona-runtime-old\n  base_url: https://persona-runtime-old.example\n"
         "dream:\n  model: runtime-old\n"
         "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
         "  recent_context_cooldown_hours: 8\n  recent_context_reentry_idle_hours: 24\n"
@@ -1992,7 +2142,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         "  direct_render_mode: auto\n  retrieval_mode: graph\n"
         "recall:\n  query_resurface_enabled: false\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
-        "reflection:\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
+        "reflection:\n  enabled: true\n  auto_enabled: true\n  model: reflection-runtime-old\n  base_url: https://reflection-runtime-old.example\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
     cfg = {
@@ -2004,6 +2154,12 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "surface_enabled": True,
             "model": "runtime-old",
             "base_url": "https://api.deepseek.com",
+        },
+        "persona": {
+            **test_config["persona"],
+            "enabled": True,
+            "model": "persona-runtime-old",
+            "base_url": "https://persona-runtime-old.example",
         },
         "gateway": {
             **test_config["gateway"],
@@ -2032,15 +2188,25 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "chain_max_frontier": 24,
         },
         "reflection": {
+            **test_config.get("reflection", {}),
+            "enabled": True,
+            "auto_enabled": True,
             "daily_enabled": False,
             "memory_affect_anchor_enabled": True,
             "relationship_weather_affect_anchor_enabled": False,
+            "model": "reflection-runtime-old",
+            "base_url": "https://reflection-runtime-old.example",
         },
     }
     reflection_engine = SimpleNamespace(
+        enabled=True,
+        auto_enabled=True,
         daily_enabled=False,
         memory_affect_anchor_enabled=True,
         relationship_weather_affect_anchor_enabled=False,
+        model="reflection-runtime-old",
+        base_url="https://reflection-runtime-old.example",
+        api_key="",
     )
 
     hot_update_calls = []
@@ -2059,6 +2225,11 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     response = await server.api_config_update(
         DummyRequest(
             {
+                "persona": {
+                    "enabled": False,
+                    "model": "persona-new",
+                    "base_url": "https://persona-new.example",
+                },
                 "dream": {"auto_enabled": False, "model": "dream-new"},
                 "gateway": {
                     "cooldown_hours": 6,
@@ -2083,9 +2254,13 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                     "chain_max_frontier": 36,
                 },
                 "reflection": {
+                    "enabled": False,
+                    "auto_enabled": False,
                     "daily_enabled": True,
                     "memory_affect_anchor_enabled": False,
                     "relationship_weather_affect_anchor_enabled": True,
+                    "model": "reflection-new",
+                    "base_url": "https://reflection-new.example",
                 },
                 "persist": True,
             }
@@ -2097,6 +2272,9 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert response.status_code == 200
     assert payload["ok"] is True
     assert "runtime_yaml_synced" in payload["updated"]
+    assert runtime_config["persona"]["enabled"] is False
+    assert runtime_config["persona"]["model"] == "persona-new"
+    assert runtime_config["persona"]["base_url"] == "https://persona-new.example"
     assert runtime_config["dream"]["model"] == "dream-new"
     assert runtime_config["dream"]["auto_enabled"] is False
     assert runtime_config["gateway"]["cooldown_hours"] == 6
@@ -2132,6 +2310,11 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "chain_min_confidence": 0.76,
             "chain_max_frontier": 36,
         },
+        "persona": {
+            "enabled": False,
+            "model": "persona-new",
+            "base_url": "https://persona-new.example",
+        },
     }
     assert runtime_config["memory_diffusion"]["enabled"] is True
     assert runtime_config["memory_diffusion"]["top_k"] == 3
@@ -2145,8 +2328,12 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert "gateway_restart_required_for_memory_diffusion" not in payload["updated"]
     assert "gateway_hot_reloaded" in payload["updated"]
     assert runtime_config["reflection"]["daily_enabled"] is True
+    assert runtime_config["reflection"]["enabled"] is False
+    assert runtime_config["reflection"]["auto_enabled"] is False
     assert runtime_config["reflection"]["memory_affect_anchor_enabled"] is False
     assert runtime_config["reflection"]["relationship_weather_affect_anchor_enabled"] is True
+    assert runtime_config["reflection"]["model"] == "reflection-new"
+    assert runtime_config["reflection"]["base_url"] == "https://reflection-new.example"
     assert reflection_engine.daily_enabled is True
     assert reflection_engine.memory_affect_anchor_enabled is False
     assert reflection_engine.relationship_weather_affect_anchor_enabled is True

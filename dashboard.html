@@ -1819,6 +1819,7 @@
     <div style="display:flex;gap:12px;margin-top:8px;">
       <button class="btn-primary" onclick="saveConfig(false)">应用（仅运行时）</button>
       <button class="btn-secondary" onclick="saveConfig(true)">应用并写入 config.yaml</button>
+      <button class="btn-secondary" onclick="saveConfig(true, true)">应用并保存密钥到 .env</button>
     </div>
     <div id="memory-config-status" style="margin-top:16px;font-size:13px;"></div>
   </div>
@@ -1990,7 +1991,34 @@
     </div>
 
     <div class="config-section">
+      <h3>Persona State</h3>
+      <div class="config-row">
+        <label>启用</label>
+        <select id="cfg-persona-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">关闭后 Gateway 不再注入 Persona 状态，也不再做回复后的 Persona 更新</div>
+      <div class="config-row">
+        <label>Model</label>
+        <input type="text" id="cfg-persona-model" placeholder="deepseek-chat" />
+      </div>
+      <div class="config-row">
+        <label>Base URL</label>
+        <input type="text" id="cfg-persona-url" placeholder="https://api.deepseek.com/v1" />
+      </div>
+      <div class="config-row">
+        <label>API Key</label>
+        <input type="password" id="cfg-persona-key" placeholder="当前: 加载中…" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空不改；点击“保存密钥到 .env”后重启仍保留</div>
+    </div>
+
+    <div class="config-section">
       <h3>夜梦 Dream</h3>
+      <div class="config-row">
+        <label>做梦引擎</label>
+        <select id="cfg-dream-engine-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">总开关；关闭后不生成新梦，也不做梦境浮现</div>
       <div class="config-row">
         <label>后台做梦</label>
         <select id="cfg-dream-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
@@ -2011,7 +2039,7 @@
         <label>API Key</label>
         <input type="password" id="cfg-dream-key" placeholder="当前: 加载中…" />
       </div>
-      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空不改。不会持久化到 yaml（请用 OMBRE_DREAM_API_KEY）</div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空不改；点击“保存密钥到 .env”后重启仍保留</div>
       <div class="config-row">
         <label>几点做梦</label>
         <input type="number" id="cfg-dream-hour" min="0" max="23" />
@@ -2042,6 +2070,16 @@
     <div class="config-section">
       <h3>记忆关系整理</h3>
       <div class="config-row">
+        <label>整理引擎</label>
+        <select id="cfg-reflection-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">总开关；关闭后不再做关系整理、日印象和写入打标</div>
+      <div class="config-row">
+        <label>自动整理</label>
+        <select id="cfg-reflection-auto"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">关闭后只保留手动触发</div>
+      <div class="config-row">
         <label>日印象</label>
         <select id="cfg-reflection-daily"><option value="true">开启</option><option value="false">关闭</option></select>
       </div>
@@ -2056,6 +2094,19 @@
         <select id="cfg-reflection-weather-anchor"><option value="true">开启</option><option value="false">关闭</option></select>
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">控制日印象/关系天气正文里的 affect_anchor</div>
+      <div class="config-row">
+        <label>Model</label>
+        <input type="text" id="cfg-reflection-model" placeholder="留空复用 Persona/脱水模型" />
+      </div>
+      <div class="config-row">
+        <label>Base URL</label>
+        <input type="text" id="cfg-reflection-url" placeholder="留空复用 Persona/脱水地址" />
+      </div>
+      <div class="config-row">
+        <label>API Key</label>
+        <input type="password" id="cfg-reflection-key" placeholder="当前: 加载中…" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空不改；点击“保存密钥到 .env”后重启仍保留</div>
     </div>
 
     <div class="config-section">
@@ -2144,7 +2195,7 @@ function showAuthOverlay(setupNeeded) {
 }
 
 function clearAuthSensitiveFields(password) {
-  ['auth-login-pwd', 'auth-setup-pwd', 'auth-setup-pwd2', 'cfg-dream-key'].forEach(function(id) {
+  ['auth-login-pwd', 'auth-setup-pwd', 'auth-setup-pwd2', 'cfg-dehy-key', 'cfg-emb-key', 'cfg-persona-key', 'cfg-reflection-key', 'cfg-dream-key'].forEach(function(id) {
     var input = document.getElementById(id);
     if (input) input.value = '';
   });
@@ -4102,6 +4153,14 @@ async function loadConfig() {
     document.getElementById('cfg-emb-url').value = cfg.embedding.base_url || '';
     document.getElementById('cfg-emb-key').placeholder = '当前: ' + (cfg.embedding.api_key_masked || (cfg.embedding.has_own_api_key ? '***' : '复用脱水 API'));
     document.getElementById('cfg-emb-key').value = '';
+    document.getElementById('cfg-persona-enabled').value =
+      (cfg.persona && cfg.persona.enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-persona-model').value = (cfg.persona && cfg.persona.model) || '';
+    document.getElementById('cfg-persona-url').value = (cfg.persona && cfg.persona.base_url) || '';
+    document.getElementById('cfg-persona-key').placeholder =
+      '当前: ' + ((cfg.persona && cfg.persona.api_key_masked) || ((cfg.persona && cfg.persona.api_ready) ? '***' : '未设置'));
+    document.getElementById('cfg-persona-key').value = '';
+    document.getElementById('cfg-dream-engine-enabled').value = cfg.dream.enabled ? 'true' : 'false';
     document.getElementById('cfg-dream-enabled').value = cfg.dream.auto_enabled ? 'true' : 'false';
     document.getElementById('cfg-dream-surface').value = cfg.dream.surface_enabled ? 'true' : 'false';
     document.getElementById('cfg-dream-model').value = cfg.dream.model || '';
@@ -4142,16 +4201,27 @@ async function loadConfig() {
     document.getElementById('cfg-chain-hops').value = diffusion.chain_max_hops ?? 6;
     document.getElementById('cfg-chain-confidence').value = diffusion.chain_min_confidence ?? 0.72;
     document.getElementById('cfg-chain-frontier').value = diffusion.chain_max_frontier ?? 24;
+    document.getElementById('cfg-reflection-enabled').value =
+      (cfg.reflection && cfg.reflection.enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-reflection-auto').value =
+      (cfg.reflection && cfg.reflection.auto_enabled) === false ? 'false' : 'true';
     document.getElementById('cfg-reflection-daily').value =
       (cfg.reflection && cfg.reflection.daily_enabled) === false ? 'false' : 'true';
     document.getElementById('cfg-reflection-memory-anchor').value =
       (cfg.reflection && cfg.reflection.memory_affect_anchor_enabled) === false ? 'false' : 'true';
     document.getElementById('cfg-reflection-weather-anchor').value =
       (cfg.reflection && cfg.reflection.relationship_weather_affect_anchor_enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-reflection-model').value = (cfg.reflection && cfg.reflection.model) || '';
+    document.getElementById('cfg-reflection-url').value = (cfg.reflection && cfg.reflection.base_url) || '';
+    document.getElementById('cfg-reflection-key').placeholder =
+      '当前: ' + ((cfg.reflection && cfg.reflection.api_key_masked) || ((cfg.reflection && cfg.reflection.api_ready) ? '***' : '未设置'));
+    document.getElementById('cfg-reflection-key').value = '';
     document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 75;
     document.getElementById('config-readonly').innerHTML =
       'Transport: <strong>' + esc(cfg.transport) + '</strong><br>' +
       'Buckets dir: <strong>' + esc(cfg.buckets_dir) + '</strong><br>' +
+      'Persona API: <strong>' + ((cfg.persona && cfg.persona.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
+      '日印象 API: <strong>' + ((cfg.reflection && cfg.reflection.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
       'Dream API: <strong>' + (cfg.dream.api_ready ? '已设置' : '未设置') + '</strong><br>' +
       'Embedding effective URL: <strong>' + esc(cfg.embedding.effective_base_url || '未设置') + '</strong>';
   } catch (e) {
@@ -4166,7 +4236,7 @@ function setConfigStatus(html) {
   });
 }
 
-async function saveConfig(persist) {
+async function saveConfig(persist, persistEnv) {
   function numberValue(id, fallback) {
     var n = parseInt(document.getElementById(id).value, 10);
     return Number.isFinite(n) ? n : fallback;
@@ -4195,7 +4265,13 @@ async function saveConfig(persist) {
       model: document.getElementById('cfg-emb-model').value,
       base_url: document.getElementById('cfg-emb-url').value,
     },
+    persona: {
+      enabled: document.getElementById('cfg-persona-enabled').value === 'true',
+      model: document.getElementById('cfg-persona-model').value,
+      base_url: document.getElementById('cfg-persona-url').value,
+    },
     dream: {
+      enabled: document.getElementById('cfg-dream-engine-enabled').value === 'true',
       auto_enabled: document.getElementById('cfg-dream-enabled').value === 'true',
       surface_enabled: document.getElementById('cfg-dream-surface').value === 'true',
       model: document.getElementById('cfg-dream-model').value,
@@ -4231,17 +4307,26 @@ async function saveConfig(persist) {
       chain_max_frontier: numberValue('cfg-chain-frontier', 24),
     },
     reflection: {
+      enabled: document.getElementById('cfg-reflection-enabled').value === 'true',
+      auto_enabled: document.getElementById('cfg-reflection-auto').value === 'true',
       daily_enabled: document.getElementById('cfg-reflection-daily').value === 'true',
       memory_affect_anchor_enabled: document.getElementById('cfg-reflection-memory-anchor').value === 'true',
       relationship_weather_affect_anchor_enabled: document.getElementById('cfg-reflection-weather-anchor').value === 'true',
+      model: document.getElementById('cfg-reflection-model').value,
+      base_url: document.getElementById('cfg-reflection-url').value,
     },
     merge_threshold: numberValue('cfg-merge', 75),
     persist: persist,
+    persist_env: !!persistEnv,
   };
   var keyVal = document.getElementById('cfg-dehy-key').value;
   if (keyVal) body.dehydration.api_key = keyVal;
   var embKeyVal = document.getElementById('cfg-emb-key').value;
   if (embKeyVal) body.embedding.api_key = embKeyVal;
+  var personaKeyVal = document.getElementById('cfg-persona-key').value;
+  if (personaKeyVal) body.persona.api_key = personaKeyVal;
+  var reflectionKeyVal = document.getElementById('cfg-reflection-key').value;
+  if (reflectionKeyVal) body.reflection.api_key = reflectionKeyVal;
   var dreamKeyVal = document.getElementById('cfg-dream-key').value;
   if (dreamKeyVal) body.dream.api_key = dreamKeyVal;
   try {

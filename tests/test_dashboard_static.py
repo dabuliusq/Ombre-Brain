@@ -169,12 +169,43 @@ def test_dashboard_exposes_reflection_affect_anchor_switches():
     save_block = html.split("async function saveConfig", 1)[1].split("var keyVal =", 1)[0]
 
     assert "<h3>记忆关系整理</h3>" in html
+    assert 'id="cfg-reflection-enabled"' in html
+    assert 'id="cfg-reflection-auto"' in html
     assert 'id="cfg-reflection-memory-anchor"' in html
     assert 'id="cfg-reflection-weather-anchor"' in html
+    assert 'id="cfg-reflection-model"' in html
+    assert 'id="cfg-reflection-url"' in html
+    assert 'id="cfg-reflection-key"' in html
+    assert "cfg.reflection.enabled" in load_block
+    assert "cfg.reflection.auto_enabled" in load_block
     assert "cfg.reflection.memory_affect_anchor_enabled" in load_block
     assert "cfg.reflection.relationship_weather_affect_anchor_enabled" in load_block
+    assert "enabled: document.getElementById('cfg-reflection-enabled').value === 'true'," in save_block
+    assert "auto_enabled: document.getElementById('cfg-reflection-auto').value === 'true'," in save_block
     assert "memory_affect_anchor_enabled: document.getElementById('cfg-reflection-memory-anchor').value === 'true'," in save_block
     assert "relationship_weather_affect_anchor_enabled: document.getElementById('cfg-reflection-weather-anchor').value === 'true'," in save_block
+    assert "if (reflectionKeyVal) body.reflection.api_key = reflectionKeyVal;" in html
+
+
+def test_dashboard_exposes_persona_config_and_env_persist_button():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+    load_block = html.split("async function loadConfig()", 1)[1].split("async function saveConfig", 1)[0]
+    save_block = html.split("async function saveConfig", 1)[1].split("var keyVal =", 1)[0]
+
+    assert "<h3>Persona State</h3>" in html
+    assert 'id="cfg-persona-enabled"' in html
+    assert 'id="cfg-persona-model"' in html
+    assert 'id="cfg-persona-url"' in html
+    assert 'id="cfg-persona-key"' in html
+    assert "saveConfig(true, true)" in html
+    assert "保存密钥到 .env" in html
+    assert "cfg.persona.enabled" in load_block
+    assert "cfg.persona.api_key_masked" in load_block
+    assert "enabled: document.getElementById('cfg-persona-enabled').value === 'true'," in save_block
+    assert "model: document.getElementById('cfg-persona-model').value," in save_block
+    assert "base_url: document.getElementById('cfg-persona-url').value," in save_block
+    assert "persist_env: !!persistEnv" in save_block
+    assert "if (personaKeyVal) body.persona.api_key = personaKeyVal;" in html
 
 
 def test_dashboard_dream_background_control_uses_auto_enabled_only():
@@ -184,8 +215,11 @@ def test_dashboard_dream_background_control_uses_auto_enabled_only():
     dream_block = save_block.split("dream: {", 1)[1].split("gateway: {", 1)[0]
     dream_lines = [line.strip() for line in dream_block.splitlines()]
 
+    assert 'id="cfg-dream-engine-enabled"' in html
+    assert "document.getElementById('cfg-dream-engine-enabled').value = cfg.dream.enabled ? 'true' : 'false';" in load_block
     assert "document.getElementById('cfg-dream-enabled').value = cfg.dream.auto_enabled ? 'true' : 'false';" in load_block
     assert "document.getElementById('cfg-dream-enabled').value = cfg.dream.enabled" not in load_block
+    assert "enabled: document.getElementById('cfg-dream-engine-enabled').value === 'true'," in dream_lines
     assert "auto_enabled: document.getElementById('cfg-dream-enabled').value === 'true'," in dream_lines
     assert "enabled: document.getElementById('cfg-dream-enabled').value === 'true'," not in dream_lines
     assert "surface_enabled: document.getElementById('cfg-dream-surface').value === 'true'," in dream_lines

@@ -432,6 +432,49 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert response.json()["memory_diffusion"]["chain_walk_enabled"] is True
 
 
+def test_gateway_config_endpoint_updates_persona_engine(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(test_config, current_inner_state_interval_rounds=15)
+    cfg["persona"] = {
+        **cfg["persona"],
+        "enabled": True,
+        "model": "persona-old",
+        "base_url": "https://persona-old.example",
+        "api_key": "",
+    }
+    monkeypatch.delenv("OMBRE_PERSONA_API_KEY", raising=False)
+    monkeypatch.delenv("OMBRE_PERSONA_MODEL", raising=False)
+    monkeypatch.delenv("OMBRE_PERSONA_BASE_URL", raising=False)
+    app, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/config",
+            headers={"Authorization": "Bearer gateway-secret"},
+            json={
+                "persona": {
+                    "enabled": False,
+                    "model": "persona-new",
+                    "base_url": "https://persona-new.example",
+                    "api_key": "persona-key",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == [
+        "persona.enabled",
+        "persona.model",
+        "persona.base_url",
+        "persona.api_key",
+    ]
+    assert service.persona_engine.enabled is False
+    assert service.persona_engine.model == "persona-new"
+    assert service.persona_engine.base_url == "https://persona-new.example"
+    assert service.persona_engine.api_key == "persona-key"
+    assert response.json()["persona"]["enabled"] is False
+    assert response.json()["persona"]["api_ready"] is True
+
+
 def test_gateway_defaults_openai_session_id(monkeypatch, test_config, bucket_mgr):
     app, service, state_store, captured = _build_service(
         monkeypatch,
@@ -447,6 +490,27 @@ def test_gateway_defaults_openai_session_id(monkeypatch, test_config, bucket_mgr
     assert response.status_code == 200
     assert captured[0]["json"]["messages"]
     assert state_store.get_current_round("default-openai-session") == 1
+
+
+def test_gateway_skips_persona_injection_when_persona_disabled(monkeypatch, test_config, bucket_mgr):
+    app, service, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(test_config, current_inner_state_interval_rounds=1),
+        bucket_mgr,
+    )
+    service.persona_engine.enabled = False
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer gateway-secret"},
+            json={"messages": [{"role": "user", "content": "你好"}]},
+        )
+
+    assert response.status_code == 200
+    content = captured[0]["json"]["messages"][-1]["content"]
+    assert "Long-term State Summary" not in content
+    assert content.endswith("你好")
 
 
 def test_gateway_accepts_anthropic_messages(monkeypatch, test_config, bucket_mgr):
