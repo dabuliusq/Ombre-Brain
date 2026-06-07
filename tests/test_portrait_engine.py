@@ -116,6 +116,7 @@ async def test_daily_portrait_maintainer_writes_evidence_bound_state_only(tmp_pa
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["last_run_date"] == "2026-06-07"
+    assert state["daily_summaries"] == {}
     assert state["portrait"]["user"]["recent_buffer"][0]["evidence"] == [{"bucket_id": evidence_id}]
     assert state["portrait"]["relationship"]["staging_pool"][0]["evidence"] == [{"bucket_id": evidence_id}]
     assert state["portrait"]["relationship"]["mid_term_evidence"] == [{"bucket_id": evidence_id}]

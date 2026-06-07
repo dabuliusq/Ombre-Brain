@@ -192,6 +192,9 @@ class DailyPortraitMaintainer:
 
         raw_patch = await self._generate_patch(date_key, state, materials, initial=initial)
         normalized_patch, rejected = self._normalize_patch(raw_patch, materials)
+        if initial:
+            # Initial portrait generation scans broad history; its summary is not a real daily recap.
+            normalized_patch["daily_summary"] = ""
         next_state = self._apply_patch(state, normalized_patch, date_key)
         next_state["updated_at"] = self._now_utc()
         next_state.setdefault("runs", []).append(
