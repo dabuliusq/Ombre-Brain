@@ -209,14 +209,16 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
     assert "darkroom" not in overview_terms
     assert "Ombre-Brain" in overview_terms
     assert "流星" in overview_terms
-    ordered_terms = [node["term"] for node in overview]
-    assert ordered_terms.index("暗房") < ordered_terms.index("暗房机制上线")
-    assert ordered_terms.index("Ombre-Brain") < ordered_terms.index("Ombre-Brain首次外部验证")
+    assert "暗房机制上线" not in overview_terms
+    assert "Ombre-Brain首次外部验证" not in overview_terms
     top_terms = {node["term"] for node in overview[:5]}
     assert "记忆不是表演" in top_terms
     assert "暗房" in top_terms
     darkroom_node = next(node for node in overview if node["term"] == "暗房")
     assert "darkroom" in darkroom_node["aliases"]
+    assert "暗房机制上线" in darkroom_node["aliases"]
+    ombre_node = next(node for node in overview if node["term"] == "Ombre-Brain")
+    assert "Ombre-Brain首次外部验证" in ombre_node["aliases"]
     assert all("overview_score" in node for node in overview)
 
     overview_edge_terms = {

@@ -745,16 +745,18 @@ class WordMapStore:
             return []
         terms: list[str] = []
 
-        def add_term(value: Any) -> None:
+        def add_term(value: Any, *, forced: bool = False) -> None:
             term = self._clean_term(value)
             if not term or term == title:
+                return
+            if not forced and self._looks_like_weak_title_fragment(term):
                 return
             term = self._overview_canonical_term(term)
             if self._is_overview_term_hidden(term) or term in terms:
                 return
             terms.append(term)
 
-        normalized_title = _normalize_term(title)
+        normalized_title = _normalize_term(title).lower()
         alias_candidates = set(self.overview_priority_terms) | set(self.overview_aliases) | {
             _normalize_term(value) for value in self.overview_aliases.values()
         }
@@ -762,7 +764,7 @@ class WordMapStore:
             if not candidate:
                 continue
             if candidate in normalized_title:
-                add_term(candidate)
+                add_term(candidate, forced=True)
 
         for match in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", title):
             add_term(match)
@@ -778,7 +780,7 @@ class WordMapStore:
             return True
         if "日印象" in term or "relationship_weather" in term:
             return True
-        if re.fullmatch(r"[a-f0-9]{12,40}", term):
+        if re.fullmatch(r"[a-f0-9]{8,40}", term):
             return True
         if re.fullmatch(r"[a-f0-9]{8}-[a-f0-9-]{27,}", term):
             return True
@@ -791,8 +793,16 @@ class WordMapStore:
         return False
 
     def _overview_canonical_term(self, value: Any) -> str:
-        term = _normalize_term(value)
-        return self.overview_aliases.get(term, str(value or "").strip())
+        raw_term = str(value or "").strip()
+        term = _normalize_term(raw_term)
+        if term in self.overview_aliases:
+            return self.overview_aliases[term]
+        if term in self.overview_priority_terms:
+            return raw_term
+        embedded = self._embedded_priority_canonical_term(raw_term, term)
+        if embedded:
+            return embedded
+        return raw_term
 
     def _overview_node_score(self, item: dict[str, Any]) -> float:
         try:
@@ -912,6 +922,32 @@ class WordMapStore:
         if re.search(r"[_-]", normalized) or re.search(r"[A-Za-z]", term):
             return 0.3
         return 0.42
+
+    def _embedded_priority_canonical_term(self, raw_term: str, normalized: str) -> str:
+        if not raw_term or not normalized:
+            return ""
+        normalized_lower = normalized.lower()
+        candidates = set(self.overview_priority_terms) | {
+            _normalize_term(value) for value in self.overview_aliases.values()
+        }
+        for candidate in sorted(candidates, key=lambda item: (-len(item), item)):
+            candidate_lower = candidate.lower()
+            if not candidate or candidate_lower == normalized_lower or candidate_lower not in normalized_lower:
+                continue
+            return self.overview_aliases.get(candidate_lower, candidate)
+        return ""
+
+    def _looks_like_weak_title_fragment(self, term: str) -> bool:
+        normalized = _normalize_term(term)
+        if not normalized:
+            return True
+        if normalized in self.overview_priority_terms:
+            return False
+        if re.fullmatch(r"[a-f0-9]{8,40}", normalized):
+            return True
+        if re.fullmatch(r"[\u4e00-\u9fff]{1,2}", term):
+            return True
+        return False
 
 
 def _bucket_text(bucket: dict[str, Any]) -> str:
