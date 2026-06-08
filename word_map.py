@@ -341,6 +341,9 @@ class WordMapStore:
         if 2 <= len(name) <= 32:
             add(name, "name", "subject", 0.9)
             jieba.add_word(name, freq=20000)
+            for term in self._title_concept_terms(name):
+                add(term, "title_keyword", "keyword", 0.94)
+                jieba.add_word(term, freq=22000)
         for raw in _list_text(meta.get("keywords")):
             add(raw, "keyword", "keyword", 0.86)
             jieba.add_word(str(raw), freq=20000)
@@ -736,6 +739,39 @@ class WordMapStore:
             return self.weak_hint_weight
         return 1.0
 
+    def _title_concept_terms(self, title: str) -> list[str]:
+        title = str(title or "").strip()
+        if not title:
+            return []
+        terms: list[str] = []
+
+        def add_term(value: Any) -> None:
+            term = self._clean_term(value)
+            if not term or term == title:
+                return
+            term = self._overview_canonical_term(term)
+            if self._is_overview_term_hidden(term) or term in terms:
+                return
+            terms.append(term)
+
+        normalized_title = _normalize_term(title)
+        alias_candidates = set(self.overview_priority_terms) | set(self.overview_aliases) | {
+            _normalize_term(value) for value in self.overview_aliases.values()
+        }
+        for candidate in sorted(alias_candidates, key=lambda item: (-len(item), item)):
+            if not candidate:
+                continue
+            if candidate in normalized_title:
+                add_term(candidate)
+
+        for match in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", title):
+            add_term(match)
+
+        for word, _score in jieba.analyse.extract_tags(title, topK=6, withWeight=True):
+            add_term(word)
+
+        return terms[:6]
+
     def _is_overview_term_hidden(self, value: Any) -> bool:
         term = _normalize_term(value)
         if not term:
@@ -767,8 +803,10 @@ class WordMapStore:
         term = str(item.get("term") or "")
         sources = set(item.get("sources") or [])
         source_bonus = self._overview_source_bonus(sources)
+        if _normalize_term(term) in self.overview_priority_terms:
+            source_bonus = max(source_bonus, 1.25)
         specificity_bonus = self._overview_specificity_bonus(term, sources)
-        coverage_factor = 1.0 / (bucket_count ** 0.42)
+        coverage_factor = 1.0 / (bucket_count ** self._overview_coverage_exponent(term, sources))
         return round(max_weight * coverage_factor * specificity_bonus * source_bonus, 4)
 
     def _overview_edge_score(self, item: dict[str, Any]) -> float:
@@ -785,12 +823,14 @@ class WordMapStore:
 
     @staticmethod
     def _overview_source_bonus(sources: set[str]) -> float:
-        if {"subject", "name"} & sources:
-            return 1.35
+        if "title_keyword" in sources:
+            return 1.45
         if "keyword" in sources:
             return 1.25
         if "tfidf" in sources:
             return 1.0
+        if {"subject", "name"} & sources:
+            return 0.9
         if "tag" in sources:
             return 0.65
         if "domain" in sources:
@@ -802,21 +842,48 @@ class WordMapStore:
         if not normalized:
             return 0.0
         score = 1.0
-        if normalized in self.overview_priority_terms:
+        exact_priority = normalized in self.overview_priority_terms
+        is_title = bool({"subject", "name"} & sources)
+        if exact_priority:
             score *= 1.8
         if re.search(r"[_-]", normalized) or re.search(r"[A-Za-z].*\d|\d.*[A-Za-z]", term):
             score *= 1.25
         if re.search(r"[A-Za-z]", term) and re.search(r"[\u4e00-\u9fff]", term):
             score *= 1.18
-        if any(marker in term for marker in ("机制", "暗房", "流星", "折角", "代码", "梦境", "显影", "外部", "验证")):
+        if not is_title and any(
+            marker in term for marker in ("机制", "暗房", "流星", "折角", "代码", "梦境", "显影", "外部", "验证")
+        ):
             score *= 1.28
         chinese_chars = re.findall(r"[\u4e00-\u9fff]", term)
         if chinese_chars:
             if len(chinese_chars) <= 6:
                 score *= 1.16
-            elif len(chinese_chars) >= 10 and {"subject", "name"} & sources:
+            elif len(chinese_chars) >= 10 and is_title:
                 score *= 0.52
-        if {"subject", "name"} & sources and any(
+        if is_title and not exact_priority and any(
+            marker in term
+            for marker in (
+                "上线",
+                "行为约定",
+                "身份配置",
+                "外部验证",
+                "接入",
+                "配置",
+                "调试",
+                "计划",
+                "待完成",
+                "偏好",
+                "调整",
+                "问题",
+                "恢复",
+                "确认",
+                "系统",
+                "功能",
+                "部署",
+            )
+        ):
+            score *= 0.42
+        elif is_title and not exact_priority and any(
             marker in term
             for marker in (
                 "上线",
@@ -837,6 +904,14 @@ class WordMapStore:
         if normalized in {"mcp", "dashboard", "codex"}:
             score *= 0.78
         return round(score, 4)
+
+    def _overview_coverage_exponent(self, term: str, sources: set[str]) -> float:
+        normalized = _normalize_term(term)
+        if normalized in self.overview_priority_terms or "title_keyword" in sources:
+            return 0.24
+        if re.search(r"[_-]", normalized) or re.search(r"[A-Za-z]", term):
+            return 0.3
+        return 0.42
 
 
 def _bucket_text(bucket: dict[str, Any]) -> str:

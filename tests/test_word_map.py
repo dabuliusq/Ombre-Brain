@@ -173,6 +173,13 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
                 domain=["AI", "编程"],
             ),
             _bucket(
+                "external-verify",
+                "首次外部验证时记录了 Ombre-Brain 的配置和结果。",
+                name="Ombre-Brain首次外部验证",
+                tags=["project_event", "commitment"],
+                domain=["AI", "编程"],
+            ),
+            _bucket(
                 "daily",
                 "日印象记录关系天气。",
                 name="2026-06-08 日印象",
@@ -200,7 +207,11 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
     assert all("日印象" not in term for term in overview_terms)
     assert "暗房" in overview_terms
     assert "darkroom" not in overview_terms
+    assert "Ombre-Brain" in overview_terms
     assert "流星" in overview_terms
+    ordered_terms = [node["term"] for node in overview]
+    assert ordered_terms.index("暗房") < ordered_terms.index("暗房机制上线")
+    assert ordered_terms.index("Ombre-Brain") < ordered_terms.index("Ombre-Brain首次外部验证")
     top_terms = {node["term"] for node in overview[:5]}
     assert "记忆不是表演" in top_terms
     assert "暗房" in top_terms
