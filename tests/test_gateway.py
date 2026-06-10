@@ -450,6 +450,7 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         memory_detail_recall_enabled=False,
         memory_detail_recall_max_ids=3,
         memory_detail_recall_budget=1200,
+        word_map_hint_enabled=False,
     )
     cfg["memory_diffusion"] = {"top_k": 4, "chain_walk_enabled": False}
     app, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
@@ -482,6 +483,7 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
                     "memory_detail_recall_enabled": True,
                     "memory_detail_recall_max_ids": 2,
                     "memory_detail_recall_budget": 900,
+                    "word_map_hint_enabled": True,
                 },
                 "memory_diffusion": {
                     "top_k": 3,
@@ -505,6 +507,7 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         "gateway.current_inner_state_interval_rounds",
         "gateway.direct_render_mode",
         "gateway.retrieval_mode",
+        "gateway.word_map_hint_enabled",
         "gateway.portrait_memory_enabled",
         "gateway.portrait_memory_budget",
         "gateway.portrait_memory_max_sources",
@@ -545,6 +548,7 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert service.memory_detail_recall_enabled is True
     assert service.memory_detail_recall_max_ids == 2
     assert service.memory_detail_recall_budget == 900
+    assert service.word_map_hint_enabled is True
     assert service.diffusion_options.top_k == 3
     assert service.diffusion_options.min_activation == pytest.approx(0.22)
     assert service.diffusion_options.chain_walk_enabled is True
@@ -559,6 +563,7 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert response.json()["gateway"]["memory_detail_recall_enabled"] is True
     assert response.json()["gateway"]["memory_detail_recall_max_ids"] == 2
     assert response.json()["gateway"]["memory_detail_recall_budget"] == 900
+    assert response.json()["gateway"]["word_map_hint_enabled"] is True
     assert response.json()["gateway"]["recent_context_cooldown_hours"] == pytest.approx(4.5)
     assert response.json()["gateway"]["recent_context_reentry_idle_hours"] == pytest.approx(24)
     assert response.json()["gateway"]["recent_context_budget"] == 240

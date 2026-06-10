@@ -8842,6 +8842,10 @@ async def api_config_update(request):
             gateway_cfg["retrieval_mode"] = _normalize_retrieval_mode(g["retrieval_mode"])
             gateway_hot_update_body["retrieval_mode"] = gateway_cfg["retrieval_mode"]
             updated.append("gateway.retrieval_mode")
+        if "word_map_hint_enabled" in g:
+            gateway_cfg["word_map_hint_enabled"] = _bool_value(g["word_map_hint_enabled"], False)
+            gateway_hot_update_body["word_map_hint_enabled"] = gateway_cfg["word_map_hint_enabled"]
+            updated.append("gateway.word_map_hint_enabled")
         if "portrait_memory_enabled" in g:
             gateway_cfg["portrait_memory_enabled"] = _bool_value(g["portrait_memory_enabled"], False)
             gateway_hot_update_body["portrait_memory_enabled"] = gateway_cfg["portrait_memory_enabled"]
@@ -9202,6 +9206,11 @@ async def api_config_update(request):
                         360,
                         128,
                         2000,
+                    )
+                if "word_map_hint_enabled" in body["gateway"]:
+                    sc_gateway["word_map_hint_enabled"] = _bool_value(
+                        body["gateway"]["word_map_hint_enabled"],
+                        False,
                     )
                 if "memory_detail_recall_enabled" in body["gateway"]:
                     sc_gateway["memory_detail_recall_enabled"] = _bool_value(

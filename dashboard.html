@@ -2283,6 +2283,14 @@
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">graph 是 p0 图召回；bucket 是接近 main 的直命中对照档</div>
       <div class="config-row">
+        <label>词图辅助</label>
+        <select id="cfg-word-map-hint-enabled">
+          <option value="false">关闭</option>
+          <option value="true">开启</option>
+        </select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认关闭；开启后词图只作为弱候选提示，仍需通过召回门控</div>
+      <div class="config-row">
         <label>旧记忆随机</label>
         <select id="cfg-query-resurface-enabled">
           <option value="false">关闭</option>
@@ -5792,6 +5800,8 @@ async function loadConfig() {
     document.getElementById('cfg-persona-context-rounds').value = personaRounds;
     document.getElementById('cfg-direct-render-mode').value = (cfg.gateway && cfg.gateway.direct_render_mode) || 'auto';
     document.getElementById('cfg-retrieval-mode').value = (cfg.gateway && cfg.gateway.retrieval_mode) || 'graph';
+    document.getElementById('cfg-word-map-hint-enabled').value =
+      (cfg.gateway && cfg.gateway.word_map_hint_enabled) ? 'true' : 'false';
     document.getElementById('cfg-query-resurface-enabled').value =
       (cfg.recall && cfg.recall.query_resurface_enabled) ? 'true' : 'false';
     var diffusion = cfg.memory_diffusion || {};
@@ -5954,6 +5964,7 @@ async function saveConfig(persist, persistEnv) {
       current_inner_state_interval_rounds: personaContextRounds,
       direct_render_mode: document.getElementById('cfg-direct-render-mode').value,
       retrieval_mode: document.getElementById('cfg-retrieval-mode').value,
+      word_map_hint_enabled: document.getElementById('cfg-word-map-hint-enabled').value === 'true',
     };
     candidate.recall = {
       query_resurface_enabled: document.getElementById('cfg-query-resurface-enabled').value === 'true',

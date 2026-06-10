@@ -3471,6 +3471,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                     "query_planner_min_chars": 24,
                     "query_planner_max_queries": 2,
                     "query_planner_max_tokens": 256,
+                    "word_map_hint_enabled": True,
                     "memory_detail_recall_enabled": True,
                     "memory_detail_recall_max_ids": 2,
                     "memory_detail_recall_budget": 900,
@@ -3544,6 +3545,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["gateway"]["query_planner_min_chars"] == 24
     assert runtime_config["gateway"]["query_planner_max_queries"] == 2
     assert runtime_config["gateway"]["query_planner_max_tokens"] == 256
+    assert runtime_config["gateway"]["word_map_hint_enabled"] is True
     assert runtime_config["gateway"]["memory_detail_recall_enabled"] is True
     assert runtime_config["gateway"]["memory_detail_recall_max_ids"] == 2
     assert runtime_config["gateway"]["memory_detail_recall_budget"] == 900
@@ -3569,6 +3571,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "query_planner_min_chars": 24,
             "query_planner_max_queries": 2,
             "query_planner_max_tokens": 256,
+            "word_map_hint_enabled": True,
             "memory_detail_recall_enabled": True,
             "memory_detail_recall_max_ids": 2,
             "memory_detail_recall_budget": 900,

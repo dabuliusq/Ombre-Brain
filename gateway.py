@@ -516,6 +516,7 @@ class GatewayService:
             "current_inner_state_interval_rounds": self.current_inner_state_interval_rounds,
             "direct_render_mode": self.direct_render_mode,
             "retrieval_mode": self.retrieval_mode,
+            "word_map_hint_enabled": self.word_map_hint_enabled,
             "portrait_memory_enabled": self.portrait_memory_enabled,
             "portrait_memory_budget": self.portrait_memory_budget,
             "portrait_memory_max_sources": self.portrait_memory_max_sources,
@@ -660,6 +661,14 @@ class GatewayService:
             self.retrieval_mode = self._normalize_retrieval_mode(payload["retrieval_mode"])
             self.gateway_cfg["retrieval_mode"] = self.retrieval_mode
             updated.append("gateway.retrieval_mode")
+        if "word_map_hint_enabled" in payload:
+            self.word_map_hint_enabled = self._bool_config_value(payload["word_map_hint_enabled"], False)
+            self.gateway_cfg["word_map_hint_enabled"] = self.word_map_hint_enabled
+            if self.word_map_hint_enabled and self.word_map_store is None:
+                self.word_map_store = WordMapStore(self.config)
+            if not self.word_map_hint_enabled:
+                self.word_map_store = None
+            updated.append("gateway.word_map_hint_enabled")
         if "portrait_memory_enabled" in payload:
             self.portrait_memory_enabled = self._bool_config_value(payload["portrait_memory_enabled"], False)
             self.gateway_cfg["portrait_memory_enabled"] = self.portrait_memory_enabled

@@ -263,6 +263,7 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert 'id="cfg-gateway-rounds"' in html
     assert 'id="cfg-direct-render-mode"' in html
     assert 'id="cfg-retrieval-mode"' in html
+    assert 'id="cfg-word-map-hint-enabled"' in html
     assert 'id="cfg-memory-detail-recall-enabled"' in html
     assert 'id="cfg-memory-detail-recall-max-ids"' in html
     assert 'id="cfg-memory-detail-recall-budget"' in html
@@ -281,6 +282,7 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert "cfg.gateway.current_inner_state_interval_rounds" in html
     assert "cfg.gateway.direct_render_mode" in html
     assert "cfg.gateway.retrieval_mode" in html
+    assert "cfg.gateway.word_map_hint_enabled" in html
     assert "cfg.gateway.memory_detail_recall_enabled" in html
     assert "cfg.gateway.memory_detail_recall_max_ids" in html
     assert "cfg.gateway.memory_detail_recall_budget" in html
@@ -296,6 +298,7 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert "current_inner_state_interval_rounds: personaContextRounds," in html
     assert "direct_render_mode: document.getElementById('cfg-direct-render-mode').value," in html
     assert "retrieval_mode: document.getElementById('cfg-retrieval-mode').value," in html
+    assert "word_map_hint_enabled: document.getElementById('cfg-word-map-hint-enabled').value === 'true'," in html
     assert "memory_detail_recall_enabled: document.getElementById('cfg-memory-detail-recall-enabled').value === 'true'," in html
     assert "memory_detail_recall_max_ids: numberValue('cfg-memory-detail-recall-max-ids', 3)," in html
     assert "memory_detail_recall_budget: numberValue('cfg-memory-detail-recall-budget', 1200)," in html
