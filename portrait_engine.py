@@ -127,6 +127,7 @@ class DailyPortraitMaintainer:
         self.recent_buffer_max = max(1, int(cfg.get("recent_buffer_max", 24)))
         self.staging_pool_max = max(1, int(cfg.get("staging_pool_max", 24)))
         self.candidate_max = max(1, int(cfg.get("candidate_max", 40)))
+        self.recent_timeline_max = max(self.recent_buffer_max, int(cfg.get("recent_timeline_max", 48)))
         self.base_url = (
             os.environ.get("OMBRE_PORTRAIT_BASE_URL", "")
             or cfg.get("base_url")
@@ -225,6 +226,9 @@ class DailyPortraitMaintainer:
         )
         if handoff_summaries:
             normalized_patch["handoff_recent_summaries"] = handoff_summaries
+        recent_timeline = self._build_recent_timeline(materials, normalized_patch, date_key)
+        if recent_timeline:
+            normalized_patch["recent_timeline"] = recent_timeline
         next_state = self._apply_patch(state, normalized_patch, date_key)
         next_state["updated_at"] = self._now_utc()
         next_state.setdefault("runs", []).append(
@@ -316,6 +320,17 @@ class DailyPortraitMaintainer:
             f.write("\n")
         os.replace(tmp_path, self.state_path)
 
+    def reset_state(self) -> dict:
+        state = self._empty_state()
+        state["updated_at"] = self._now_utc()
+        self.save_state(state)
+        return {
+            "status": "reset",
+            "state_path": self.state_path,
+            "updated_at": state["updated_at"],
+            "initial": True,
+        }
+
     def delete_state_item(
         self,
         *,
@@ -359,7 +374,7 @@ class DailyPortraitMaintainer:
             if layer not in {"recent_buffer", "staging_pool"}:
                 return {"status": "invalid", "reason": "invalid_layer"}
             rows = scope_state.get(layer)
-        elif area in {"recent_activities", "stable_candidates", "profile_fact_candidates", "skipped"}:
+        elif area in {"recent_activities", "recent_timeline", "stable_candidates", "profile_fact_candidates", "skipped"}:
             rows = state.get(area)
             scope = ""
             layer = area
@@ -400,21 +415,10 @@ class DailyPortraitMaintainer:
     def build_handoff_sections(self, *, max_recent_items: int = 4) -> dict[str, str]:
         state = self.load_state()
         portrait = state.get("portrait", {}) if isinstance(state.get("portrait"), dict) else {}
-        user_portrait = self._format_scope_block(portrait.get("user", {}), max_recent_items=max_recent_items)
-        recent_activity = self._format_recent_activity_block(state, max_items=3)
-        if recent_activity:
-            user_portrait = "\n".join(
-                part
-                for part in [
-                    user_portrait,
-                    "最近在做什么:\n" + recent_activity,
-                ]
-                if part.strip()
-            )
         return {
-            "user": user_portrait,
-            "persona": self._format_scope_block(portrait.get("persona", {}), max_recent_items=max_recent_items),
-            "relationship": self._format_scope_block(portrait.get("relationship", {}), max_recent_items=max_recent_items),
+            "user": self._format_scope_block(portrait.get("user", {})),
+            "persona": self._format_scope_block(portrait.get("persona", {})),
+            "relationship": self._format_scope_block(portrait.get("relationship", {})),
             "recent_continuity": self._format_recent_continuity(state, max_items=max_recent_items),
             "state_path": self.state_path,
             "updated_at": str(state.get("updated_at") or ""),
@@ -866,6 +870,125 @@ class DailyPortraitMaintainer:
                 summaries[summary_date] = self._clip(summary, 240)
         return summaries
 
+    def _build_recent_timeline(self, materials: dict, patch: dict, date_key: str) -> list[dict]:
+        recent_dates = self._recent_date_keys(date_key)
+        buckets = {
+            str(item.get("bucket_id") or ""): item
+            for item in materials.get("buckets", []) or []
+            if isinstance(item, dict) and str(item.get("bucket_id") or "")
+        }
+        sessions = {
+            str(item.get("session_id") or ""): item
+            for item in materials.get("persona_events", []) or []
+            if isinstance(item, dict) and str(item.get("session_id") or "")
+        }
+        rows: list[dict] = []
+
+        def append_item(item: dict, scope: str) -> None:
+            if not isinstance(item, dict):
+                return
+            text = self._clip(item.get("text") or "", 180)
+            if not text:
+                return
+            evidence = self._dedupe_evidence(item.get("evidence", []))
+            if not evidence:
+                return
+            timestamp = self._timeline_timestamp_for_evidence(evidence, buckets, sessions)
+            source_date = self._timeline_source_date(
+                timestamp,
+                item,
+                evidence,
+                buckets,
+                sessions,
+            )
+            if source_date not in recent_dates:
+                return
+            row = {
+                "scope": scope,
+                "text": text,
+                "evidence": evidence,
+                "source_date": source_date,
+                "source_dates": self._merge_source_dates([], item.get("source_dates", [])),
+                "confidence": item.get("confidence", 0.55),
+            }
+            if timestamp:
+                row["timestamp"] = timestamp.isoformat(timespec="minutes")
+                row["time_label"] = timestamp.strftime("%Y-%m-%d %H:%M")
+            rows.append(row)
+
+        for item in patch.get("add_recent_activity", []) or []:
+            append_item(item, "doing")
+        for item in patch.get("add_recent", []) or []:
+            append_item(item, str(item.get("scope") or "recent"))
+
+        rows.sort(
+            key=lambda row: (
+                self._timeline_sort_value(row),
+                self._recent_continuity_scope_priority(str(row.get("scope") or "")),
+                self._norm(row.get("text", "")),
+            ),
+            reverse=True,
+        )
+        deduped = []
+        seen = set()
+        for row in rows:
+            key = (self._norm(row.get("text", "")), str(row.get("scope") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        return deduped[: self.recent_timeline_max]
+
+    def _timeline_timestamp_for_evidence(
+        self,
+        evidence: list[dict],
+        buckets: dict[str, dict],
+        sessions: dict[str, dict],
+    ) -> datetime | None:
+        candidates: list[datetime] = []
+        for row in evidence:
+            if not isinstance(row, dict):
+                continue
+            bucket_id = str(row.get("bucket_id") or "")
+            session_id = str(row.get("session_id") or "")
+            bucket = buckets.get(bucket_id)
+            if bucket:
+                for key in ("created", "updated_at"):
+                    parsed = self._parse_iso(bucket.get(key))
+                    if parsed:
+                        candidates.append(parsed)
+                        break
+            session = sessions.get(session_id)
+            if session:
+                parsed = self._parse_iso(session.get("created_at"))
+                if parsed:
+                    candidates.append(parsed)
+        return max(candidates) if candidates else None
+
+    def _timeline_source_date(
+        self,
+        timestamp: datetime | None,
+        item: dict,
+        evidence: list[dict],
+        buckets: dict[str, dict],
+        sessions: dict[str, dict],
+    ) -> str:
+        if timestamp:
+            return timestamp.date().isoformat()
+        for value in self._merge_source_dates(item.get("source_dates", []), item.get("source_date", "")):
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                return value
+        for row in evidence:
+            bucket_id = str(row.get("bucket_id") or "") if isinstance(row, dict) else ""
+            session_id = str(row.get("session_id") or "") if isinstance(row, dict) else ""
+            bucket_date = str((buckets.get(bucket_id) or {}).get("source_date") or "")
+            session_date = str((sessions.get(session_id) or {}).get("source_date") or "")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", bucket_date):
+                return bucket_date
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", session_date):
+                return session_date
+        return ""
+
     def _handoff_weather_text(self, bucket: dict) -> str:
         text = str(bucket.get("text") or bucket.get("source_excerpt") or "").strip()
         text = self._clean_fallback_text(text)
@@ -944,6 +1067,9 @@ class DailyPortraitMaintainer:
                 if re.fullmatch(r"\d{4}-\d{2}-\d{2}", summary_date) and summary_text:
                     summaries[summary_date] = summary_text
             state["handoff_recent_summaries"] = dict(sorted(summaries.items())[-90:])
+        for item in patch.get("recent_timeline", []) or []:
+            if isinstance(item, dict):
+                self._upsert_recent_timeline_item(state["recent_timeline"], item, date_key)
 
         for item in patch.get("add_recent_activity", []):
             self._upsert_portrait_item(
@@ -1036,6 +1162,61 @@ class DailyPortraitMaintainer:
         rows.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
         del rows[max_items:]
 
+    def _upsert_recent_timeline_item(self, rows: list[dict], item: dict, date_key: str) -> None:
+        key = (self._norm(item.get("text", "")), str(item.get("scope") or ""))
+        if not key[0]:
+            return
+        now = self._now_utc()
+        for row in rows:
+            row_key = (self._norm(row.get("text", "")), str(row.get("scope") or ""))
+            if row_key != key:
+                continue
+            row["text"] = item["text"]
+            row["evidence"] = self._dedupe_evidence(row.get("evidence", []) + item.get("evidence", []))
+            row["source_dates"] = self._merge_source_dates(row.get("source_dates", []), item.get("source_dates", []))
+            row["source_date"] = item.get("source_date") or row.get("source_date", "")
+            row["confidence"] = max(float(row.get("confidence") or 0.0), float(item.get("confidence") or 0.0))
+            incoming_time = self._parse_iso(item.get("timestamp"))
+            current_time = self._parse_iso(row.get("timestamp"))
+            if incoming_time and (not current_time or incoming_time >= current_time):
+                row["timestamp"] = incoming_time.isoformat(timespec="minutes")
+                row["time_label"] = incoming_time.strftime("%Y-%m-%d %H:%M")
+            elif not row.get("time_label") and current_time:
+                row["time_label"] = current_time.strftime("%Y-%m-%d %H:%M")
+            row["last_seen_date"] = date_key
+            row["updated_at"] = now
+            row["count"] = int(row.get("count") or 1) + 1
+            break
+        else:
+            timestamp = self._parse_iso(item.get("timestamp"))
+            row = {
+                "scope": str(item.get("scope") or "recent"),
+                "text": item["text"],
+                "evidence": self._dedupe_evidence(item.get("evidence", [])),
+                "source_dates": self._merge_source_dates([], item.get("source_dates", [])),
+                "source_date": str(item.get("source_date") or ""),
+                "confidence": item.get("confidence", 0.55),
+                "first_seen_date": date_key,
+                "last_seen_date": date_key,
+                "created_at": now,
+                "updated_at": now,
+                "count": 1,
+            }
+            if timestamp:
+                row["timestamp"] = timestamp.isoformat(timespec="minutes")
+                row["time_label"] = timestamp.strftime("%Y-%m-%d %H:%M")
+            rows.append(row)
+        rows.sort(
+            key=lambda row: (
+                self._timeline_sort_value(row),
+                self._recent_continuity_scope_priority(str(row.get("scope") or "")),
+                str(row.get("updated_at") or ""),
+                self._norm(row.get("text", "")),
+            ),
+            reverse=True,
+        )
+        del rows[self.recent_timeline_max:]
+
     def _merge_source_dates(self, existing: Any, incoming: Any) -> list[str]:
         dates = {
             str(item or "").strip()
@@ -1068,22 +1249,16 @@ class DailyPortraitMaintainer:
         )
         rows.append(candidate)
 
-    def _format_scope_block(self, scope_state: dict, *, max_recent_items: int) -> str:
+    def _format_scope_block(self, scope_state: dict) -> str:
         if not isinstance(scope_state, dict):
             return ""
         lines = []
         if str(scope_state.get("stable") or "").strip():
-            lines.append(f"Stable: {self._clip(scope_state['stable'], 360)}")
+            lines.append(f"Stable: {self._clip(scope_state['stable'], 260)}")
         if str(scope_state.get("mid_term") or "").strip():
             evidence = self._format_evidence(scope_state.get("mid_term_evidence", []))
             suffix = f" ({evidence})" if evidence else ""
-            lines.append(f"Mid-term: {self._clip(scope_state['mid_term'], 360)}{suffix}")
-        for row in (scope_state.get("staging_pool") or [])[: max(0, max_recent_items // 2)]:
-            evidence = self._format_evidence(row.get("evidence", []))
-            lines.append(f"- staging: {self._clip(row.get('text', ''), 180)}" + (f" ({evidence})" if evidence else ""))
-        for row in (scope_state.get("recent_buffer") or [])[:max_recent_items]:
-            evidence = self._format_evidence(row.get("evidence", []))
-            lines.append(f"- recent: {self._clip(row.get('text', ''), 180)}" + (f" ({evidence})" if evidence else ""))
+            lines.append(f"Mid-term: {self._clip(scope_state['mid_term'], 260)}{suffix}")
         return "\n".join(line for line in lines if line.strip())
 
     def _format_recent_activity_block(self, state: dict, *, max_items: int) -> str:
@@ -1106,6 +1281,10 @@ class DailyPortraitMaintainer:
         return "\n".join(dict.fromkeys(line for line in lines if line.strip()))
 
     def _format_recent_continuity(self, state: dict, *, max_items: int) -> str:
+        timeline = self._format_recent_timeline(state, max_items=max_items)
+        if timeline:
+            return timeline
+
         by_date: dict[str, list[tuple[str, dict]]] = {}
         handoff = (
             state.get("handoff_recent_summaries", {})
@@ -1168,10 +1347,86 @@ class DailyPortraitMaintainer:
     def _recent_continuity_scope_priority(scope: str) -> int:
         return {
             "summary": 50,
+            "doing": 45,
             "relationship": 40,
             "user": 30,
             "persona": 20,
         }.get(str(scope or ""), 10)
+
+    def _format_recent_timeline(self, state: dict, *, max_items: int) -> str:
+        rows = state.get("recent_timeline", []) if isinstance(state.get("recent_timeline"), list) else []
+        clean_rows = [row for row in rows if isinstance(row, dict) and str(row.get("text") or "").strip()]
+        if not clean_rows:
+            return ""
+        by_date: dict[str, list[dict]] = {}
+        for row in clean_rows:
+            date_key = self._timeline_date_key(row)
+            if date_key:
+                by_date.setdefault(date_key, []).append(row)
+        lines = []
+        emitted = 0
+        date_keys = sorted(by_date.keys(), reverse=True)[: self.recent_continuity_days]
+        reserved_old_days = max(0, len(date_keys) - 1)
+        for day_index, date_key in enumerate(date_keys):
+            day_rows = by_date[date_key]
+            day_rows.sort(
+                key=lambda row: (
+                    self._timeline_sort_value(row),
+                    self._recent_continuity_scope_priority(str(row.get("scope") or "")),
+                    str(row.get("updated_at") or row.get("created_at") or ""),
+                    self._norm(row.get("text", "")),
+                ),
+                reverse=True,
+            )
+            day_limit = max(1, max_items - reserved_old_days) if day_index == 0 else 1
+            char_limit = 150 if day_index == 0 else 100
+            for row in day_rows[:day_limit]:
+                if emitted >= max_items:
+                    break
+                label = self._timeline_label(row)
+                scope = self._recent_timeline_scope_label(str(row.get("scope") or "recent"))
+                evidence = self._format_evidence(row.get("evidence", []))
+                suffix = f" ({evidence})" if evidence else ""
+                lines.append(f"- {label} / {scope}: {self._clip(row.get('text', ''), char_limit)}{suffix}")
+                emitted += 1
+            if emitted >= max_items:
+                break
+        return "\n".join(dict.fromkeys(line for line in lines if line.strip()))
+
+    def _recent_timeline_scope_label(self, scope: str) -> str:
+        return {
+            "doing": "doing",
+            "user": "user",
+            "persona": "persona",
+            "relationship": "relationship",
+        }.get(str(scope or "").strip(), "recent")
+
+    def _timeline_label(self, row: dict) -> str:
+        parsed = self._parse_iso(row.get("timestamp"))
+        if parsed:
+            return parsed.strftime("%Y-%m-%d %H:%M")
+        label = str(row.get("time_label") or "").strip()
+        if label:
+            return label
+        return self._timeline_date_key(row)
+
+    def _timeline_date_key(self, row: dict) -> str:
+        parsed = self._parse_iso(row.get("timestamp"))
+        if parsed:
+            return parsed.date().isoformat()
+        source_date = str(row.get("source_date") or "").strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", source_date):
+            return source_date
+        return self._row_source_date(row)
+
+    def _timeline_sort_value(self, row: dict) -> str:
+        parsed = self._parse_iso(row.get("timestamp"))
+        if parsed:
+            return parsed.isoformat(timespec="minutes")
+        date_key = self._timeline_date_key(row)
+        if date_key:
+            return f"{date_key}T00:00"
+        return ""
 
     def _row_source_date(self, row: dict) -> str:
         for value in row.get("source_dates", []) or []:
@@ -1568,6 +1823,7 @@ class DailyPortraitMaintainer:
             "daily_summaries": {},
             "handoff_recent_summaries": {},
             "recent_activities": [],
+            "recent_timeline": [],
             "stable_candidates": [],
             "profile_fact_candidates": [],
             "skipped": [],
@@ -1582,7 +1838,7 @@ class DailyPortraitMaintainer:
                         base["portrait"][scope].update(value[scope])
             elif key in {"daily_summaries", "handoff_recent_summaries"} and isinstance(value, dict):
                 base[key] = value
-            elif key in {"recent_activities", "stable_candidates", "profile_fact_candidates", "skipped", "runs"} and isinstance(value, list):
+            elif key in {"recent_activities", "recent_timeline", "stable_candidates", "profile_fact_candidates", "skipped", "runs"} and isinstance(value, list):
                 base[key] = value
             elif key in {"version", "updated_at", "last_run_date"}:
                 base[key] = str(value or "")

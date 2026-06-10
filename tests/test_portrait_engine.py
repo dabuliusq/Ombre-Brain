@@ -133,13 +133,15 @@ async def test_daily_portrait_maintainer_writes_evidence_bound_state_only(tmp_pa
     assert state["portrait"]["relationship"]["stable"] == ""
     assert state["stable_candidates"][0]["status"] == "candidate"
     assert state["profile_fact_candidates"][0]["status"] == "candidate"
+    assert state["recent_timeline"][0]["time_label"] == "2026-06-07 10:00"
 
     all_buckets = await bucket_mgr.list_all(include_archive=True)
     assert len(all_buckets) == 2
 
-    handoff_user = engine.build_handoff_sections(max_recent_items=4)["user"]
-    assert "最近在做什么:" in handoff_user
-    assert "小雨最近在推进 Ombre-Brain 换窗 handoff 和 portrait maintainer" in handoff_user
+    sections = engine.build_handoff_sections(max_recent_items=4)
+    assert "最近在做什么:" not in sections["user"]
+    assert "小雨最近在推进 Ombre-Brain 换窗 handoff 和 portrait maintainer" not in sections["user"]
+    assert "2026-06-07 10:00 / doing: 小雨最近在推进 Ombre-Brain 换窗 handoff 和 portrait maintainer" in sections["recent_continuity"]
 
 
 @pytest.mark.asyncio
@@ -209,6 +211,65 @@ async def test_daily_portrait_initial_run_requires_manual_force_by_default(tmp_p
     assert forced["status"] == "initialized"
     assert forced["initial"] is True
     assert state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_portrait_reset_state_makes_next_manual_generation_initial(tmp_path, test_config, bucket_mgr):
+    await bucket_mgr.create(
+        content="### moment\n\n小雨清空画像后，下一次手动生成应该重新按第一次画像扫材料。",
+        name="portrait reset initial",
+        tags=["project_event"],
+        domain=["记忆系统"],
+        created="2026-06-08T10:00:00+08:00",
+        updated_at="2026-06-08T10:00:00+08:00",
+    )
+    state_path = tmp_path / "state" / "portrait_state.json"
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "daily_enabled": True,
+                "state_path": str(state_path),
+            },
+        }
+    )
+    state = engine._empty_state()
+    state["last_run_date"] = "2026-06-07"
+    state["runs"].append({"date": "2026-06-07", "initial": False})
+    state["portrait"]["user"]["stable"] = "旧画像要被清空。"
+    engine.save_state(state)
+
+    reset = engine.reset_state()
+    loaded = engine.load_state()
+
+    assert reset["status"] == "reset"
+    assert loaded["runs"] == []
+    assert loaded["last_run_date"] == ""
+    assert loaded["portrait"]["user"]["stable"] == ""
+
+    async def fake_patch(_date_key, _state, _materials, *, initial):
+        assert initial is True
+        return {
+            "daily_summary": "",
+            "add_recent": [],
+            "add_recent_activity": [],
+            "move_to_staging": [],
+            "rewrite_mid_term": [],
+            "stable_candidate": [],
+            "profile_fact_candidate": [],
+            "skip": [],
+        }
+
+    engine._generate_patch = fake_patch
+    result = await engine.maintain_daily(
+        bucket_mgr,
+        force=True,
+        now=datetime(2026, 6, 8, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert result["status"] == "initialized"
+    assert result["initial"] is True
 
 
 @pytest.mark.asyncio
@@ -850,6 +911,7 @@ async def test_initial_portrait_keeps_recent_days_by_source_date_and_demotes_old
     assert [row["text"] for row in relationship["staging_pool"]] == ["更旧材料不应当进入 Recent Continuity。"]
 
     continuity = engine.build_handoff_sections(max_recent_items=4)["recent_continuity"]
-    assert "2026-06-07 / relationship: 当天凌晨材料可以进入 recent" in continuity
-    assert "2026-06-06 / relationship: 前一天材料应该在 2026-06-06 下展示" in continuity
+    assert "2026-06-07 01:00 / doing: 小雨最近在确认当天材料能不能进入最近事项" in continuity
+    assert "2026-06-07 01:00 / relationship: 当天凌晨材料可以进入 recent" in continuity
+    assert "2026-06-06 20:00 / relationship: 前一天材料应该在 2026-06-06 下展示" in continuity
     assert "更旧材料" not in continuity

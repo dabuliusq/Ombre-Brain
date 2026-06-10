@@ -2399,6 +2399,7 @@
       <div class="profile-actions">
         <button type="button" onclick="loadPortraitState()">刷新</button>
         <button type="button" onclick="runPortraitMaintain()">手动生成</button>
+        <button type="button" class="danger" onclick="resetPortraitState()">清空画像</button>
       </div>
     </div>
     <section class="portrait-state-panel" id="portrait-state-panel">
@@ -3300,6 +3301,26 @@ async function runPortraitMaintain() {
   }
 }
 
+async function resetPortraitState() {
+  var typed = prompt('输入 RESET 清空 Portrait State。下一次手动生成会按第一次生成运行。');
+  if (typed !== 'RESET') return;
+  setPortraitMaintainMessage('清空中…', '');
+  try {
+    var res = await authFetch(BASE + '/api/portrait-state/reset', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ confirm: 'RESET' })
+    });
+    if (!res) return;
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok) throw new Error(data.error || '清空失败');
+    setPortraitMaintainMessage('已清空画像；下一次手动生成会按第一次生成。', 'ok');
+    await loadPortraitState();
+  } catch (e) {
+    setPortraitMaintainMessage('清空失败: ' + e.message, 'error');
+  }
+}
+
 function renderPortraitState(data) {
   var content = document.getElementById('portrait-state-content');
   var summary = document.getElementById('portrait-state-summary');
@@ -3317,6 +3338,7 @@ function renderPortraitState(data) {
     '<span class="profile-chip">state ' + esc(state.state_path || '—') + '</span>' +
   '</div>';
   content.innerHTML =
+    renderPortraitTimeline(state.recent_timeline, state.recent_activities) +
     '<div class="portrait-state-grid">' +
       renderPortraitScope('user', portrait.user || {}) +
       renderPortraitScope('persona', portrait.persona || {}) +
@@ -3326,6 +3348,22 @@ function renderPortraitState(data) {
       renderPortraitCandidates('Stable Candidates', state.stable_candidates) +
       renderPortraitCandidates('Profile Fact Candidates', state.profile_fact_candidates) +
     '</div>';
+}
+
+function renderPortraitTimeline(timeline, recentActivities) {
+  var rows = portraitRows(timeline);
+  var area = 'recent_timeline';
+  if (!rows.length) {
+    rows = portraitRows(recentActivities);
+    area = 'recent_activities';
+  }
+  rows = rows.slice(0, 8).map(function(row, index) {
+    return withPortraitDelete(row, { area: area, index: index, text: row && row.text || '' });
+  });
+  return '<section class="portrait-scope portrait-timeline">' +
+    '<div class="portrait-layer-title">Recent Timeline</div>' +
+    renderPortraitRows(rows, '还没有 recent timeline。') +
+  '</section>';
 }
 
 function renderPortraitScope(scope, scopeState) {
@@ -3400,6 +3438,7 @@ function withPortraitDelete(row, spec) {
 }
 
 function portraitRowDateLabel(item) {
+  if (item.time_label) return 'time ' + item.time_label;
   var dates = Array.isArray(item.source_dates) ? item.source_dates.filter(Boolean) : [];
   if (item.source_date) dates.unshift(item.source_date);
   var seen = [];

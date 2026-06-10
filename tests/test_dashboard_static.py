@@ -177,15 +177,21 @@ def test_dashboard_exposes_portrait_state_panel():
     assert "只读，不写 profile_fact、anchor 或 Core Memory" in html
     assert "loadPortraitState()" in html
     assert "runPortraitMaintain" in html
+    assert "resetPortraitState" in html
+    assert "Recent Timeline" in html
     assert "renderPortraitState" in html
     assert "renderPortraitScope" in html
     assert "renderPortraitCandidates" in html
     assert "renderPortraitEvidence" in html
     assert "BASE + '/api/portrait-state'" in html
     assert "BASE + '/api/portrait-maintain'" in html
+    assert "BASE + '/api/portrait-state/reset'" in html
     assert "body: JSON.stringify({ force: true })" in html
+    assert "body: JSON.stringify({ confirm: 'RESET' })" in html
     assert "read only" in html
     assert "手动生成" in html
+    assert "清空画像" in html
+    assert "state.recent_timeline" in html
     assert "state.stable_candidates" in html
     assert "state.profile_fact_candidates" in html
     assert ".portrait-state-grid" in html

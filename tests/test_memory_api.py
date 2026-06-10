@@ -2912,6 +2912,14 @@ async def test_api_portrait_state_reports_readonly_state(monkeypatch, tmp_path):
                 "evidence": [{"bucket_id": "bucket-user"}],
             }
         ],
+        "recent_timeline": [
+            {
+                "scope": "doing",
+                "text": "小雨最近在看 portrait dashboard。",
+                "time_label": "2026-06-07 20:00",
+                "evidence": [{"bucket_id": "bucket-user"}],
+            }
+        ],
         "stable_candidates": [{"scope": "relationship", "text": "候选稳定画像", "status": "candidate"}],
         "profile_fact_candidates": [{"scope": "user", "text": "候选画像事实", "status": "candidate"}],
     }
@@ -2940,6 +2948,7 @@ async def test_api_portrait_state_reports_readonly_state(monkeypatch, tmp_path):
     assert payload["last_run_date"] == "2026-06-07"
     assert payload["portrait"]["user"]["recent_buffer"][0]["evidence"][0]["bucket_id"] == "bucket-user"
     assert payload["recent_activities"][0]["text"] == "小雨最近在看 portrait dashboard。"
+    assert payload["recent_timeline"][0]["time_label"] == "2026-06-07 20:00"
     assert payload["stable_candidates"][0]["text"] == "候选稳定画像"
     assert payload["profile_fact_candidates"][0]["text"] == "候选画像事实"
 
@@ -2985,6 +2994,41 @@ async def test_api_portrait_state_item_delete(monkeypatch, tmp_path, test_config
     assert response.status_code == 200
     assert payload["status"] == "deleted"
     assert loaded["portrait"]["user"]["staging_pool"] == []
+
+
+@pytest.mark.asyncio
+async def test_api_portrait_state_reset_clears_state(monkeypatch, tmp_path, test_config):
+    import server
+    from portrait_engine import DailyPortraitMaintainer
+
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(tmp_path / "portrait_state.json"),
+            },
+        }
+    )
+    state = engine._empty_state()
+    state["last_run_date"] = "2026-06-07"
+    state["runs"].append({"date": "2026-06-07", "initial": False})
+    state["portrait"]["user"]["stable"] = "旧画像要被清空。"
+    engine.save_state(state)
+
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(server, "portrait_engine", engine)
+
+    response = await server.api_portrait_state_reset(DummyRequest(body={"confirm": "RESET"}))
+    payload = json.loads(response.body)
+    loaded = engine.load_state()
+
+    assert response.status_code == 200
+    assert payload["status"] == "reset"
+    assert payload["initial"] is True
+    assert loaded["runs"] == []
+    assert loaded["last_run_date"] == ""
+    assert loaded["portrait"]["user"]["stable"] == ""
 
 
 @pytest.mark.asyncio

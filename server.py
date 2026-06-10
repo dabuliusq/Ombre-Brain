@@ -7131,6 +7131,7 @@ def _portrait_state_payload() -> dict:
         "last_run_date": state.get("last_run_date", ""),
         "portrait": state.get("portrait", {}),
         "recent_activities": state.get("recent_activities", []),
+        "recent_timeline": state.get("recent_timeline", []),
         "stable_candidates": state.get("stable_candidates", []),
         "profile_fact_candidates": state.get("profile_fact_candidates", []),
     }
@@ -7375,6 +7376,28 @@ async def api_portrait_state_item_delete(request):
     if status == "conflict":
         return JSONResponse(result, status_code=409)
     return JSONResponse(result, status_code=400)
+
+
+@mcp.custom_route("/api/portrait-state/reset", methods=["POST"])
+async def api_portrait_state_reset(request):
+    """Reset maintained portrait state so the next manual generation is an initial run."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "json body must be an object"}, status_code=400)
+    if body.get("confirm") != "RESET":
+        return JSONResponse({"error": "confirmation required"}, status_code=400)
+    try:
+        return JSONResponse(portrait_engine.reset_state())
+    except Exception as e:
+        logger.warning("Portrait state reset API failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @mcp.custom_route("/api/profile-facts", methods=["GET"])
