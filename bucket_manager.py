@@ -979,7 +979,7 @@ class BucketManager:
             return 0.0
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         checks = (
-            (meta.get("name"), 0.62),
+            (meta.get("name"), 0.95),
             (" ".join(str(item) for item in meta.get("domain", []) or []), 0.56),
             (" ".join(str(item) for item in meta.get("tags", []) or []), 0.54),
             (self._bucket_searchable_content(bucket), 0.48),

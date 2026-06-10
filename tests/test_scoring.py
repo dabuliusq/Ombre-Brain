@@ -344,9 +344,9 @@ class TestSearchScoring:
         scores = bucket_mgr.calc_topic_scores("QQ邮箱", [exact, generic])
         spaced_scores = bucket_mgr.calc_topic_scores("QQ 邮箱", [exact, generic])
 
-        assert scores["exact"] >= 0.62
+        assert scores["exact"] >= 0.95
         assert scores["exact"] > scores.get("generic", 0)
-        assert spaced_scores["exact"] >= 0.62
+        assert spaced_scores["exact"] >= 0.95
         assert spaced_scores["exact"] > spaced_scores.get("generic", 0)
 
     def test_qq_domain_suffix_can_match_as_exact_phrase(self, bucket_mgr):
@@ -360,7 +360,7 @@ class TestSearchScoring:
             },
         }
 
-        assert bucket_mgr.calc_topic_scores("QQ群", [bucket])["qq-group"] >= 0.62
+        assert bucket_mgr.calc_topic_scores("QQ群", [bucket])["qq-group"] >= 0.95
 
     def test_associative_prompt_scores_only_focus_anchor(self, bucket_mgr):
         noise = {
