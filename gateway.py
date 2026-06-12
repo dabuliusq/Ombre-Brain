@@ -48,7 +48,7 @@ from memory_relevance import (
     memory_relevance_options_from_config,
     query_has_facet,
     recall_rank,
-    recall_search_query,
+    recall_topic_query,
     relevance_multiplier,
 )
 from memory_layers import (
@@ -1483,7 +1483,7 @@ class GatewayService:
                         current_user_query,
                         session_id,
                         all_buckets,
-                        search_query=recall_search_query(current_user_query, self.relevance_options),
+                        search_query=self._normalized_recall_query(current_user_query),
                         include_query_planner_debug=True,
                     )
                     selected_buckets = self._with_explicit_source_record_buckets(
@@ -5515,7 +5515,7 @@ class GatewayService:
                 query_planner_debug=query_planner_debug,
             )
 
-        search_query = recall_search_query(query, self.relevance_options)
+        search_query = self._normalized_recall_query(query)
         selected_buckets, suppressed_buckets, query_planner_debug = await self._select_dynamic_buckets(
             query,
             session_id,
@@ -5540,21 +5540,38 @@ class GatewayService:
             for bucket in all_buckets
             if str(bucket.get("id") or "") in eligible_ids
         ]
-        word_map_boost_scores, word_map_boost_debug = self._get_word_map_hint_scores(
-            search_query,
-            eligible_buckets,
-        )
+        if search_query:
+            word_map_boost_scores, word_map_boost_debug = self._get_word_map_hint_scores(
+                search_query,
+                eligible_buckets,
+            )
+        else:
+            word_map_boost_scores, word_map_boost_debug = {}, {}
         word_map_hint_bucket_ids = set(word_map_boost_scores)
         for bucket_id, score in word_map_boost_scores.items():
             bucket_boosts[bucket_id] = max(
                 bucket_boosts.get(bucket_id, 0.0),
                 self._clamp(score) * self.word_map_hint_moment_boost,
             )
-        candidates = self.memory_moment_store.search_moments(
-            search_query,
-            limit=max(20, self.dynamic_top_k * 2, self.inject_max_cards * 8),
-            bucket_boosts=bucket_boosts,
-        )
+        candidates = []
+        if search_query:
+            moment_search_queries = [search_query]
+            raw_moment_query = str(query or "").strip()
+            if raw_moment_query and raw_moment_query != search_query:
+                moment_search_queries.append(raw_moment_query)
+            seen_moment_ids: set[str] = set()
+            for moment_query in moment_search_queries:
+                for moment in self.memory_moment_store.search_moments(
+                    moment_query,
+                    limit=max(20, self.dynamic_top_k * 2, self.inject_max_cards * 8),
+                    bucket_boosts=bucket_boosts,
+                ):
+                    moment_id = str(moment.get("moment_id") or "")
+                    if moment_id and moment_id in seen_moment_ids:
+                        continue
+                    if moment_id:
+                        seen_moment_ids.add(moment_id)
+                    candidates.append(moment)
         explicit_lookup = self._query_explicitly_requests_caution_memory(query)
         candidates = [
             moment for moment in candidates
@@ -7310,12 +7327,16 @@ class GatewayService:
 
     def _query_planner_debug_base(self, query: str) -> dict[str, Any]:
         anchor_plan = self._query_anchor_plan(query)
+        raw_query = str(query or "")
+        normalized_query = self._normalized_recall_query(raw_query)
         return {
             "enabled": bool(self.query_planner_enabled),
             "triggered": False,
             "trigger_reason": "",
             "skip_reason": "",
-            "original_query": self._clip_text(query, 500),
+            "original_query": self._clip_text(raw_query, 500),
+            "raw_query": self._clip_text(raw_query, 500),
+            "normalized_query": self._clip_text(normalized_query, 500),
             "anchor_plan": self._query_anchor_plan_debug(anchor_plan),
             "queries": [],
             "supplemental": [],
@@ -7331,6 +7352,33 @@ class GatewayService:
             "model": self.query_planner_model,
             "model_source": "dehydration" if self.query_planner_uses_dehydrator else "gateway",
         }
+
+    def _normalized_recall_query(self, query: str) -> str:
+        topic = str(recall_topic_query(query, self.relevance_options) or "").strip()
+        return self._strip_leading_lookup_address_from_text(topic, query)
+
+    @staticmethod
+    def _leading_lookup_address(query: str) -> str:
+        compact = re.sub(r"[\s，。！？、,.!?:：;；~～（）()\[\]【】「」『』“”\"'`-]+", "", str(query or ""))
+        if not compact:
+            return ""
+        for address in ("亲爱的", "哥哥", "宝宝", "老婆", "小乖"):
+            index = compact.find(address)
+            if index < 0 or index > 1:
+                continue
+            after = compact[index + len(address):]
+            if after.startswith(("知道", "记得", "记不记得", "想起", "想起来", "问", "说")):
+                return address
+            if any(marker in after[:10] for marker in ("为什么", "怎么", "为何")):
+                return address
+        return ""
+
+    def _strip_leading_lookup_address_from_text(self, text: str, query: str) -> str:
+        value = str(text or "").strip()
+        address = self._leading_lookup_address(query)
+        if address and value.startswith(address):
+            return value[len(address):].strip()
+        return value
 
     def _query_anchor_plan(self, query: str) -> QueryAnchorPlan:
         return self.recall_policy.build_query_anchor_plan(query)
@@ -7404,6 +7452,14 @@ class GatewayService:
             terms = [event_term, plan.weak_terms[0]]
         else:
             terms = list(plan.search_terms[:2])
+        terms = [
+            term
+            for term in (
+                self._strip_leading_lookup_address_from_text(term, query)
+                for term in terms
+            )
+            if term
+        ]
         if not terms:
             return None
         anchor = " ".join(terms[:3])
@@ -7758,30 +7814,37 @@ class GatewayService:
             return [], []
 
         bucket_map = {bucket["id"]: bucket for bucket in eligible}
-        candidate_query = search_query or query
-        keyword_scores = self._get_keyword_candidates(candidate_query, eligible)
-        semantic_scores = await self._get_semantic_candidates(candidate_query, set(bucket_map))
-        word_map_scores, word_map_debug = self._get_word_map_hint_scores(
-            candidate_query,
-            eligible,
-            required_terms=required_terms,
-        )
+        raw_query = query
+        normalized_query = str(search_query or "").strip()
+        if not normalized_query:
+            normalized_query = self._normalized_recall_query(raw_query)
+        keyword_scores = self._get_keyword_candidates(normalized_query, eligible) if normalized_query else {}
+        semantic_scores = await self._get_semantic_candidates(raw_query, set(bucket_map))
+        if normalized_query:
+            word_map_scores, word_map_debug = self._get_word_map_hint_scores(
+                normalized_query,
+                eligible,
+                required_terms=required_terms,
+            )
+        else:
+            word_map_scores, word_map_debug = {}, {}
         lexical_terms = self._planner_lexical_match_terms(required_terms)
         if (
             not lexical_terms
-            and self.recall_policy.is_auto_concrete_topic_query(candidate_query)
-            and not self.recall_policy.requires_topic_evidence(candidate_query)
-            and not self._query_should_skip_word_map_hint(candidate_query)
+            and normalized_query
+            and self.recall_policy.is_auto_concrete_topic_query(raw_query)
+            and not self.recall_policy.requires_topic_evidence(normalized_query)
+            and not self._query_should_skip_word_map_hint(normalized_query)
         ):
             lexical_terms = self._planner_lexical_match_terms(
-                self.recall_policy.specific_query_terms(candidate_query)
+                self.recall_policy.specific_query_terms(normalized_query)
             )
         lexical_ids = {
             str(bucket.get("id") or "")
             for bucket in eligible
             if lexical_terms and bucket.get("id") and self._bucket_matches_any_planner_term(bucket, lexical_terms)
         }
-        diversity_terms = self._query_anchor_terms_for_diversity(candidate_query)
+        diversity_terms = self._query_anchor_terms_for_diversity(normalized_query or raw_query)
         candidate_ids = set(keyword_scores) | set(semantic_scores) | lexical_ids | set(word_map_scores)
         if not candidate_ids:
             return [], []
@@ -7939,7 +8002,7 @@ class GatewayService:
                         must_terms = list(planner_query.get("must_terms") or [])
                         if not short_query or not must_terms:
                             continue
-                        short_search_query = recall_search_query(short_query, self.relevance_options)
+                        short_search_query = self._normalized_recall_query(short_query)
                         admitted, suppressed = await self._dynamic_bucket_candidate_items(
                             short_query,
                             session_id,

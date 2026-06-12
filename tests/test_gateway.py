@@ -3624,7 +3624,7 @@ def test_gateway_associative_prompt_searches_source_record_focus(
             query_planner_enabled=False,
         ),
         bucket_mgr,
-        embedding_results={"小狗": [(source_id, 0.96)]},
+        embedding_results={"如果我说小狗，你会想到什么": [(source_id, 0.96)]},
         embedding_queries=embedding_queries,
     )
 
@@ -3643,8 +3643,7 @@ def test_gateway_associative_prompt_searches_source_record_focus(
         )
 
     assert response.status_code == 200
-    assert "小狗" in embedding_queries
-    assert "如果我说小狗，你会想到什么" not in embedding_queries
+    assert embedding_queries == ["如果我说小狗，你会想到什么"]
     injected = _joined_message_content(captured[0]["json"]["messages"])
     assert "bucket_capsule" in injected
     assert "matched_fragment:" in injected
@@ -5633,6 +5632,7 @@ def test_gateway_query_planner_adds_exact_must_term_bucket_when_search_misses_it
 
     monkeypatch.setattr(service, "_call_query_planner", fake_query_planner)
     monkeypatch.setattr(service, "_get_keyword_candidates", fake_keyword_candidates)
+    monkeypatch.setattr(service.recall_policy, "is_auto_concrete_topic_query", lambda query_text: False)
 
     with TestClient(app) as client:
         response = client.post(
@@ -5706,6 +5706,8 @@ def test_gateway_query_planner_falls_back_when_emotional_reason_model_is_empty(
         return None, "query_planner_empty_response"
 
     monkeypatch.setattr(service, "_call_query_planner", empty_query_planner)
+    monkeypatch.setattr(service, "_get_keyword_candidates", lambda query_text, eligible: {})
+    monkeypatch.setattr(service.recall_policy, "is_auto_concrete_topic_query", lambda query_text: False)
 
     with TestClient(app) as client:
         response = client.post(
@@ -6515,7 +6517,7 @@ def test_gateway_context_name_does_not_beat_email_action_intent(
 
     assert response.status_code == 200
     injected = _joined_message_content(captured[0]["json"]["messages"])
-    assert embedding_queries == ["发邮件"]
+    assert embedding_queries == ["小雨 发邮件"]
     assert reranker.calls
     assert reranker.calls[0]["query"] == "小雨 发邮件"
     assert "QQ邮箱自动收发配置" in injected
@@ -7448,6 +7450,124 @@ def test_word_map_hint_skips_probe_queries(
     assert service._get_word_map_hint_scores("试一下空调😽", all_buckets) == ({}, {})
     scores, _debug = service._get_word_map_hint_scores("空调", all_buckets)
     assert neighbor_id in scores
+
+
+def test_gateway_dual_query_view_routes_raw_semantic_and_normalized_lexical(
+    monkeypatch, test_config, bucket_mgr
+):
+    query = "嗯...换种说法，还记得猫猫吗"
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨记过猫猫睡在键盘边这件小事。",
+        name="猫猫键盘边",
+        hours_ago=12,
+        keywords=["猫猫"],
+    )
+    embedding_queries: list[str] = []
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            core_memory_budget=0,
+            recent_context_budget=0,
+            related_memory_budget=0,
+            query_planner_enabled=False,
+            retrieval_mode="bucket",
+            word_map_hint_enabled=False,
+        ),
+        bucket_mgr,
+        embedding_results={query: [(bucket_id, 0.96)]},
+        embedding_queries=embedding_queries,
+    )
+    keyword_queries: list[str] = []
+    word_map_queries: list[str] = []
+
+    def fake_keyword_candidates(query_text: str, eligible):
+        keyword_queries.append(query_text)
+        return {}
+
+    def fake_word_map_scores(query_text: str, eligible, *, required_terms=None):
+        word_map_queries.append(query_text)
+        return {}, {}
+
+    monkeypatch.setattr(service, "_get_keyword_candidates", fake_keyword_candidates)
+    monkeypatch.setattr(service, "_get_word_map_hint_scores", fake_word_map_scores)
+
+    all_buckets = _run(bucket_mgr.list_all())
+    selected, _suppressed, planner_debug = _run(
+        service._select_dynamic_buckets(
+            query,
+            "sess-dual-query-view",
+            all_buckets,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert embedding_queries == [query]
+    assert keyword_queries == ["猫猫"]
+    assert word_map_queries == ["猫猫"]
+    assert planner_debug["raw_query"] == query
+    assert planner_debug["normalized_query"] == "猫猫"
+    assert [bucket["id"] for bucket in selected] == [bucket_id]
+
+
+def test_gateway_dual_query_view_skips_lexical_routes_when_normalized_empty(
+    monkeypatch, test_config, bucket_mgr
+):
+    query = "哭哭"
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨那天哭过，但这条不该靠水词直接词法召回。",
+        name="哭过的旧事",
+        hours_ago=12,
+        keywords=["哭"],
+    )
+    embedding_queries: list[str] = []
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            core_memory_budget=0,
+            recent_context_budget=0,
+            related_memory_budget=0,
+            query_planner_enabled=False,
+            retrieval_mode="bucket",
+            word_map_hint_enabled=False,
+        ),
+        bucket_mgr,
+        embedding_results={query: [(bucket_id, 0.96)]},
+        embedding_queries=embedding_queries,
+    )
+    keyword_queries: list[str] = []
+    word_map_queries: list[str] = []
+
+    def fake_keyword_candidates(query_text: str, eligible):
+        keyword_queries.append(query_text)
+        return {}
+
+    def fake_word_map_scores(query_text: str, eligible, *, required_terms=None):
+        word_map_queries.append(query_text)
+        return {}, {}
+
+    monkeypatch.setattr(service, "_auto_query_too_vague", lambda query_text: False)
+    monkeypatch.setattr(service, "_get_keyword_candidates", fake_keyword_candidates)
+    monkeypatch.setattr(service, "_get_word_map_hint_scores", fake_word_map_scores)
+
+    all_buckets = _run(bucket_mgr.list_all())
+    _selected, _suppressed, planner_debug = _run(
+        service._select_dynamic_buckets(
+            query,
+            "sess-empty-normalized-query",
+            all_buckets,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert embedding_queries == [query]
+    assert keyword_queries == []
+    assert word_map_queries == []
+    assert planner_debug["raw_query"] == query
+    assert planner_debug["normalized_query"] == ""
 
 
 def test_concrete_short_query_uses_direct_lexical_seed_when_search_misses(
