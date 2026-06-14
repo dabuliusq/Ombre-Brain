@@ -297,6 +297,7 @@ cp config.example.yaml /srv/ombre-brain/config.yaml
 - `embedding.model/base_url`：embedding 模型和地址；key 推荐放 `.env` 的 `OMBRE_EMBEDDING_API_KEY`。
 - `reranker.model/base_url`：召回候选重排序模型；默认 `Qwen/Qwen3-Reranker-4B`，`base_url` 留空时复用 embedding 地址，key 优先读 `OMBRE_RERANKER_API_KEY`，未填则复用 `OMBRE_EMBEDDING_API_KEY`。双视图召回后它仍用于 raw query 候选重排；暂时不用时设 `reranker.enabled=false` 或 `OMBRE_RERANKER_ENABLED=false`，不要删除配置键。
 - `write_path.semantic_search_timeout_seconds`：写入时找“只读相关旧记忆”的语义检索最多等待几秒，默认 `3`。网络慢时会跳过语义部分，不影响写入成功。
+- `import.*`：对话历史导入默认用较小 chunk、每窗最多 5 条、短标签，并关闭自动合并；只做安全重复跳过。大文件导入前不要先打开 `import.auto_merge_enabled`，需要合并时先人工审查结果。
 - `dream.*`：夜梦后台配置；`surface_enabled` 管 `breath()` 浮现，`inject_enabled` 管 Gateway Dream Context 注入，默认不注入。
 - `identity.*`：改 AI 名、前端用户作者名、prompt 里的用户称呼和亲密称呼。
 - `persona.profile_id`：改成自己的稳定 id，避免和示例部署共用同一份 Persona 状态身份。

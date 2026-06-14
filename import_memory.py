@@ -262,7 +262,10 @@ def detect_and_parse(raw_content: str, filename: str = "") -> list[dict]:
 
 _OVERLAP_CONTEXT_NOTICE = "[上下文提示] 以下是上一段结尾，只用于理解前后关系，请不要从这里单独提取记忆。"
 _CURRENT_SEGMENT_NOTICE = "[本段内容]"
+DEFAULT_IMPORT_CHUNK_TOKENS = 3500
 _IMPORT_DUPLICATE_SIMILARITY = 88.0
+_IMPORT_DEFAULT_MERGE_THRESHOLD = 90.0
+_IMPORT_DEFAULT_MERGE_CONTENT_SIMILARITY = 92.0
 
 
 def _normalize_import_text(text: str) -> str:
@@ -282,6 +285,99 @@ def _import_similarity_text(text: str) -> str:
 def _import_content_hash(text: str) -> str:
     normalized = _normalize_import_text(text)
     return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def _int_between(value, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def _float_between(value, default: float, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def _bool_value(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _clean_import_list(value, *, max_items: int, max_chars: int, default: list[str] | None = None) -> list[str]:
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    cleaned: list[str] = []
+    for item in raw_items:
+        text = re.sub(r"\s+", "", str(item or "").strip())
+        text = text.strip("，。；;、,. ")
+        if not text:
+            continue
+        text = text[:max_chars]
+        if text and text not in cleaned:
+            cleaned.append(text)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned or list(default or [])
+
+
+def _dedupe_list(values: list) -> list:
+    seen = set()
+    result = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _dedupe_refs(values: list) -> list[dict]:
+    seen = set()
+    result = []
+    for value in values or []:
+        if not isinstance(value, dict):
+            continue
+        key = str(value.get("chunk_id") or value.get("id") or value).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _date_key(value) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    return match.group(0) if match else ""
+
+
+def _date_ranges_disjoint(left_start, left_end, right_start, right_end) -> bool:
+    left_a = _date_key(left_start)
+    left_b = _date_key(left_end) or left_a
+    right_a = _date_key(right_start)
+    right_b = _date_key(right_end) or right_a
+    if not (left_a and left_b and right_a and right_b):
+        return False
+    return left_b < right_a or right_b < left_a
 
 
 def _tail_for_overlap(text: str, overlap_tokens: int) -> str:
@@ -355,7 +451,7 @@ def _split_oversized_turn(role_label: str, content: str, target_tokens: int) -> 
     return pieces
 
 
-def chunk_turns(turns: list[dict], target_tokens: int = 10000) -> list[dict]:
+def chunk_turns(turns: list[dict], target_tokens: int = DEFAULT_IMPORT_CHUNK_TOKENS) -> list[dict]:
     """
     Group conversation turns into chunks of ~target_tokens.
     Returns list of {content, timestamp_start, timestamp_end, turn_count}.
@@ -445,7 +541,9 @@ class ImportState:
             "api_calls": 0,
             "memories_created": 0,
             "memories_merged": 0,
+            "memories_duplicate_skipped": 0,
             "memories_raw": 0,
+            "memories_failed": 0,
             "errors": [],
             "status": "idle",  # idle | running | paused | completed | error
             "started_at": "",
@@ -459,6 +557,8 @@ class ImportState:
                 with open(self.state_file, "r", encoding="utf-8") as f:
                     saved = json.load(f)
                 self.data.update(saved)
+                self.data.setdefault("memories_duplicate_skipped", 0)
+                self.data.setdefault("memories_failed", 0)
                 return True
             except (json.JSONDecodeError, OSError):
                 return False
@@ -483,7 +583,9 @@ class ImportState:
             "api_calls": 0,
             "memories_created": 0,
             "memories_merged": 0,
+            "memories_duplicate_skipped": 0,
             "memories_raw": 0,
+            "memories_failed": 0,
             "errors": [],
             "status": "running",
             "started_at": now_iso(),
@@ -511,10 +613,11 @@ IMPORT_EXTRACT_PROMPT = """你是一个对话记忆提取专家。从以下对�
 3. 过滤掉纯技术调试输出、代码块、重复问答、无意义寒暄
 4. 如果对话中有特殊暗号、仪式性行为、关键承诺等，标记 preserve_raw=true
 5. 如果内容是用户和AI之间的习惯性互动模式（例如打招呼方式、告别习惯），标记 is_pattern=true
-6. 每条记忆不少于30字
-7. 总条目数控制在 0~10 个（没有值得记的就返回空数组）
-8. 在 content 中对人名、地名、专有名词用 [[双链]] 标记
-9. 如果片段里出现「[上下文提示]」，该部分只是上一段尾巴，只用于理解前后关系；不要从上下文提示本身单独提取记忆，除非同一事实在「[本段内容]」里继续出现
+6. content 优先，标签最后生成；每条记忆不少于50字，保留具体事实、时间、对象和原话线索
+7. 总条目数控制在 0~5 个（没有值得记的就返回空数组），宁可少提，不要把不相关事实揉成一条
+8. tags 最多 6 个，每个不超过 12 个字；只写原文直接支持的核心词，不要长句标签
+9. 在 content 中对人名、地名、专有名词用 [[双链]] 标记
+10. 如果片段里出现「[上下文提示]」，该部分只是上一段尾巴，只用于理解前后关系；不要从上下文提示本身单独提取记忆，除非同一事实在「[本段内容]」里继续出现
 
 输出格式（纯 JSON 数组，无其他内容）：
 [
@@ -564,7 +667,48 @@ class ImportEngine:
         self.bucket_mgr = bucket_mgr
         self.dehydrator = dehydrator
         self.embedding_engine = embedding_engine
-        self.state = ImportState(config["buckets_dir"])
+        import_cfg = config.get("import", {}) if isinstance(config.get("import", {}), dict) else {}
+        self.chunk_target_tokens = _int_between(
+            import_cfg.get("chunk_target_tokens"),
+            DEFAULT_IMPORT_CHUNK_TOKENS,
+            800,
+            10000,
+        )
+        self.extract_max_input_chars = _int_between(
+            import_cfg.get("extract_max_input_chars"),
+            0,
+            0,
+            50000,
+        )
+        self.max_items_per_chunk = _int_between(import_cfg.get("max_items_per_chunk"), 5, 1, 10)
+        self.max_tags = _int_between(import_cfg.get("max_tags"), 6, 0, 10)
+        self.max_tag_chars = _int_between(import_cfg.get("max_tag_chars"), 12, 4, 32)
+        self.auto_merge_enabled = _bool_value(import_cfg.get("auto_merge_enabled"), False)
+        self.import_merge_threshold = _float_between(
+            import_cfg.get("merge_threshold"),
+            _IMPORT_DEFAULT_MERGE_THRESHOLD,
+            0.0,
+            100.0,
+        )
+        self.merge_min_content_similarity = _float_between(
+            import_cfg.get("merge_min_content_similarity"),
+            _IMPORT_DEFAULT_MERGE_CONTENT_SIMILARITY,
+            0.0,
+            100.0,
+        )
+        self.merge_require_domain_overlap = _bool_value(
+            import_cfg.get("merge_require_domain_overlap"),
+            True,
+        )
+        self.merge_require_source_match = _bool_value(
+            import_cfg.get("merge_require_source_match"),
+            True,
+        )
+        self.merge_block_disjoint_dates = _bool_value(
+            import_cfg.get("merge_block_disjoint_dates"),
+            True,
+        )
+        self.state = ImportState(config.get("state_dir") or config["buckets_dir"])
         self._paused = False
         self._running = False
         self._chunks: list[dict] = []
@@ -609,7 +753,11 @@ class ImportEngine:
                     logger.info(f"Resuming import from chunk {self.state.data['processed']}/{self.state.data['total_chunks']}")
                     # Re-parse and re-chunk to get the same chunks
                     turns = detect_and_parse(raw_content, filename)
-                    self._chunks = chunk_turns(turns)
+                    self._chunks = self._attach_source_metadata(
+                        chunk_turns(turns, target_tokens=self.chunk_target_tokens),
+                        filename,
+                        source_hash,
+                    )
                     self.state.data["status"] = "running"
                     self.state.save()
                     return await self._process_chunks(preserve_raw)
@@ -622,7 +770,11 @@ class ImportEngine:
                 self._running = False
                 return {"error": "No conversation turns found in file"}
 
-            self._chunks = chunk_turns(turns)
+            self._chunks = self._attach_source_metadata(
+                chunk_turns(turns, target_tokens=self.chunk_target_tokens),
+                filename,
+                source_hash,
+            )
             if not self._chunks:
                 self._running = False
                 return {"error": "No processable chunks after splitting"}
@@ -694,8 +846,10 @@ class ImportEngine:
             return
 
         # --- Store each extracted memory ---
+        source_metadata = self._source_metadata_for_chunk(chunk)
         for item in items:
             try:
+                item = {**item, **source_metadata}
                 should_preserve = preserve_raw or item.get("preserve_raw", False)
                 status = await self._merge_or_create_item(item, preserve_raw=should_preserve)
 
@@ -704,8 +858,12 @@ class ImportEngine:
                     self.state.data["memories_created"] += 1
                 elif status == "created":
                     self.state.data["memories_created"] += 1
-                else:
+                elif status == "duplicate":
+                    self.state.data["memories_duplicate_skipped"] += 1
+                elif status == "merged":
                     self.state.data["memories_merged"] += 1
+                else:
+                    self.state.data["memories_failed"] += 1
 
                 # Patch timestamp if available
                 if chunk.get("timestamp_start"):
@@ -714,17 +872,21 @@ class ImportEngine:
 
             except Exception as e:
                 logger.warning(f"Failed to store memory: {item.get('name', '?')}: {e}")
+                self.state.data["memories_failed"] += 1
 
     async def _extract_memories(self, chunk_content: str) -> list[dict]:
         """Use LLM to extract memories from a conversation chunk."""
         if not self.dehydrator.api_available:
             raise RuntimeError("API not available")
 
+        user_content = chunk_content
+        if self.extract_max_input_chars > 0:
+            user_content = chunk_content[: self.extract_max_input_chars]
         response = await self.dehydrator.client.chat.completions.create(
             model=self.dehydrator.model,
             messages=[
                 {"role": "system", "content": IMPORT_EXTRACT_PROMPT},
-                {"role": "user", "content": chunk_content[:12000]},
+                {"role": "user", "content": user_content},
             ],
             max_tokens=4096,
             temperature=0.0,
@@ -739,8 +901,7 @@ class ImportEngine:
 
         return self._parse_extraction(raw)
 
-    @staticmethod
-    def _parse_extraction(raw: str) -> list[dict]:
+    def _parse_extraction(self, raw: str) -> list[dict]:
         """Parse and validate LLM extraction result."""
         try:
             cleaned = raw.strip()
@@ -755,7 +916,7 @@ class ImportEngine:
             return []
 
         validated = []
-        for item in items:
+        for item in items[: self.max_items_per_chunk]:
             if not isinstance(item, dict) or not item.get("content"):
                 continue
             try:
@@ -768,13 +929,16 @@ class ImportEngine:
             except (ValueError, TypeError):
                 valence, arousal = 0.5, 0.3
 
+            content = str(item["content"]).strip()
+            if not content:
+                continue
             validated.append({
                 "name": str(item.get("name", ""))[:20],
-                "content": str(item["content"]),
-                "domain": item.get("domain", ["未分类"])[:3],
+                "content": content,
+                "domain": _clean_import_list(item.get("domain"), max_items=2, max_chars=16, default=["未分类"]),
                 "valence": valence,
                 "arousal": arousal,
-                "tags": [str(t) for t in item.get("tags", [])][:10],
+                "tags": _clean_import_list(item.get("tags"), max_items=self.max_tags, max_chars=self.max_tag_chars),
                 "importance": importance,
                 "preserve_raw": bool(item.get("preserve_raw", False)),
                 "is_pattern": bool(item.get("is_pattern", False)),
@@ -832,12 +996,13 @@ class ImportEngine:
     async def _merge_or_create_item(self, item: dict, preserve_raw: bool = False) -> str:
         """Try to merge with existing bucket, or create new. Returns created/merged/raw/duplicate."""
         content = item["content"]
-        domain = item.get("domain", ["未分类"])
-        tags = item.get("tags", [])
+        domain = _clean_import_list(item.get("domain"), max_items=2, max_chars=16, default=["未分类"])
+        tags = _clean_import_list(item.get("tags"), max_items=self.max_tags, max_chars=self.max_tag_chars)
         importance = item.get("importance", 5)
         valence = item.get("valence", 0.5)
         arousal = item.get("arousal", 0.3)
         name = item.get("name", "")
+        extra_metadata = self._extra_metadata_for_item(item)
 
         duplicate = await self._find_duplicate_bucket(content)
         if duplicate:
@@ -857,6 +1022,8 @@ class ImportEngine:
                 valence=valence,
                 arousal=arousal,
                 name=name or None,
+                source="import",
+                extra_metadata=extra_metadata,
             )
             if self.embedding_engine:
                 try:
@@ -874,20 +1041,8 @@ class ImportEngine:
                     pass
             return "raw"
 
-        try:
-            existing = await self.bucket_mgr.search(
-                content,
-                limit=1,
-                domain_filter=domain or None,
-                include_archive=False,
-            )
-        except Exception:
-            existing = []
-
-        merge_threshold = self.config.get("merge_threshold", 75)
-
-        if existing and existing[0].get("score", 0) > merge_threshold:
-            bucket = existing[0]
+        bucket = await self._find_import_merge_candidate(item)
+        if bucket:
             if not (
                 bucket["metadata"].get("pinned")
                 or bucket["metadata"].get("protected")
@@ -898,6 +1053,7 @@ class ImportEngine:
                     self.state.data["api_calls"] += 1
                     old_v = bucket["metadata"].get("valence", 0.5)
                     old_a = bucket["metadata"].get("arousal", 0.3)
+                    merged_metadata = self._merged_source_metadata(bucket.get("metadata", {}), extra_metadata)
                     await self.bucket_mgr.update(
                         bucket["id"],
                         content=merged,
@@ -906,6 +1062,8 @@ class ImportEngine:
                         domain=list(set(bucket["metadata"].get("domain", []) + domain)),
                         valence=round((old_v + valence) / 2, 2),
                         arousal=round((old_a + arousal) / 2, 2),
+                        source="import",
+                        extra_metadata=merged_metadata,
                     )
                     if self.embedding_engine:
                         try:
@@ -929,6 +1087,8 @@ class ImportEngine:
             valence=valence,
             arousal=arousal,
             name=name or None,
+            source="import",
+            extra_metadata=extra_metadata,
         )
         if self.embedding_engine:
             try:
@@ -945,6 +1105,135 @@ class ImportEngine:
             except Exception:
                 pass
         return "created"
+
+    def _attach_source_metadata(self, chunks: list[dict], filename: str, source_hash: str) -> list[dict]:
+        source_file = str(filename or "upload").strip() or "upload"
+        enriched = []
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            item = dict(chunk)
+            item["source_file"] = source_file
+            item["source_hash"] = source_hash
+            item["chunk_index"] = index
+            item["chunk_total"] = total
+            item["source_chunk_id"] = f"{source_hash}:{index:05d}"
+            enriched.append(item)
+        return enriched
+
+    @staticmethod
+    def _chunk_ref(chunk: dict) -> dict:
+        return {
+            "type": "import_chunk",
+            "chunk_id": str(chunk.get("source_chunk_id") or ""),
+            "source_file": str(chunk.get("source_file") or ""),
+            "source_hash": str(chunk.get("source_hash") or ""),
+            "chunk_index": int(chunk.get("chunk_index") or 0),
+            "chunk_total": int(chunk.get("chunk_total") or 0),
+            "timestamp_start": str(chunk.get("timestamp_start") or ""),
+            "timestamp_end": str(chunk.get("timestamp_end") or ""),
+            "turn_count": int(chunk.get("turn_count") or 0),
+        }
+
+    def _source_metadata_for_chunk(self, chunk: dict) -> dict:
+        ref = self._chunk_ref(chunk)
+        return {
+            "source_chunk_ids": [ref["chunk_id"]] if ref["chunk_id"] else [],
+            "source_refs": [ref] if ref["chunk_id"] else [],
+            "import_source_file": ref["source_file"],
+            "import_source_hash": ref["source_hash"],
+            "import_timestamp_start": ref["timestamp_start"],
+            "import_timestamp_end": ref["timestamp_end"],
+        }
+
+    @staticmethod
+    def _extra_metadata_for_item(item: dict) -> dict:
+        keys = (
+            "source_chunk_ids",
+            "source_refs",
+            "import_source_file",
+            "import_source_hash",
+            "import_timestamp_start",
+            "import_timestamp_end",
+        )
+        return {key: item.get(key) for key in keys if item.get(key)}
+
+    async def _find_import_merge_candidate(self, item: dict) -> dict | None:
+        if not self.auto_merge_enabled:
+            return None
+        content = str(item.get("content") or "")
+        domain = item.get("domain", ["未分类"])
+        try:
+            existing = await self.bucket_mgr.search(
+                content,
+                limit=1,
+                domain_filter=domain or None,
+                include_archive=False,
+            )
+        except Exception:
+            existing = []
+        if not existing or existing[0].get("score", 0) <= self.import_merge_threshold:
+            return None
+        bucket = existing[0]
+        return bucket if self._can_merge_import_item(bucket, item) else None
+
+    def _can_merge_import_item(self, bucket: dict, item: dict) -> bool:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        if meta.get("pinned") or meta.get("protected") or meta.get("type") == "feel":
+            return False
+        if self.merge_require_domain_overlap:
+            existing_domains = {str(d).strip().lower() for d in meta.get("domain", []) or [] if str(d).strip()}
+            item_domains = {str(d).strip().lower() for d in item.get("domain", []) or [] if str(d).strip()}
+            if not existing_domains or not item_domains or not (existing_domains & item_domains):
+                return False
+        if self.merge_require_source_match:
+            existing_hash = str(meta.get("import_source_hash") or "").strip()
+            item_hash = str(item.get("import_source_hash") or "").strip()
+            if not existing_hash or not item_hash or existing_hash != item_hash:
+                return False
+        if self.merge_block_disjoint_dates and _date_ranges_disjoint(
+            meta.get("import_timestamp_start"),
+            meta.get("import_timestamp_end"),
+            item.get("import_timestamp_start"),
+            item.get("import_timestamp_end"),
+        ):
+            return False
+        similarity = fuzz.token_set_ratio(
+            _import_similarity_text(str(bucket.get("content") or "")),
+            _import_similarity_text(str(item.get("content") or "")),
+        )
+        return similarity >= self.merge_min_content_similarity
+
+    @staticmethod
+    def _merged_source_metadata(existing_meta: dict, item_meta: dict) -> dict:
+        source_chunk_ids = _dedupe_list(
+            list(existing_meta.get("source_chunk_ids") or []) + list(item_meta.get("source_chunk_ids") or [])
+        )
+        source_refs = _dedupe_refs(
+            list(existing_meta.get("source_refs") or []) + list(item_meta.get("source_refs") or [])
+        )
+        starts = [
+            str(value)
+            for value in (existing_meta.get("import_timestamp_start"), item_meta.get("import_timestamp_start"))
+            if str(value or "").strip()
+        ]
+        ends = [
+            str(value)
+            for value in (existing_meta.get("import_timestamp_end"), item_meta.get("import_timestamp_end"))
+            if str(value or "").strip()
+        ]
+        merged = {
+            "source_chunk_ids": source_chunk_ids,
+            "source_refs": source_refs,
+        }
+        for key in ("import_source_file", "import_source_hash"):
+            value = existing_meta.get(key) or item_meta.get(key)
+            if value:
+                merged[key] = value
+        if starts:
+            merged["import_timestamp_start"] = min(starts)
+        if ends:
+            merged["import_timestamp_end"] = max(ends)
+        return merged
 
     async def detect_patterns(self) -> list[dict]:
         """

@@ -2533,6 +2533,7 @@
         <span>API调用: <b id="import-api-calls">0</b></span>
         <span>新建: <b id="import-created">0</b></span>
         <span>合并: <b id="import-merged">0</b></span>
+        <span>重复跳过: <b id="import-duplicate-skipped">0</b></span>
         <span>原文: <b id="import-raw">0</b></span>
       </div>
       <div style="margin-top:12px;">
@@ -6268,6 +6269,7 @@ function updateImportUI(s) {
   document.getElementById('import-api-calls').textContent = s.api_calls;
   document.getElementById('import-created').textContent = s.memories_created;
   document.getElementById('import-merged').textContent = s.memories_merged;
+  document.getElementById('import-duplicate-skipped').textContent = s.memories_duplicate_skipped || 0;
   document.getElementById('import-raw').textContent = s.memories_raw;
   const statusMap = { running: '⏳ 导入中…', paused: '⏸ 已暂停', completed: '✅ 完成', error: '❌ 出错' };
   document.getElementById('import-status-text').textContent = statusMap[s.status] || s.status;

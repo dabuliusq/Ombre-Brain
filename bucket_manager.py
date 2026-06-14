@@ -429,6 +429,12 @@ class BucketManager:
             post["source_persona_event_ids"] = (
                 kwargs["source_persona_event_ids"] if isinstance(kwargs["source_persona_event_ids"], list) else []
             )
+        if "extra_metadata" in kwargs and isinstance(kwargs["extra_metadata"], dict):
+            reserved = {"id", "name", "content", "created", "last_active", "updated_at"}
+            for key, value in kwargs["extra_metadata"].items():
+                if key in reserved or value is None:
+                    continue
+                post[str(key)] = value
 
         # --- Auto-refresh content update time and activation time ---
         # --- 自动刷新内容更新时间与激活时间 ---

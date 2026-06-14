@@ -43,6 +43,22 @@ identity:
 # 存新记忆时，如果与已有桶的相似度超过此值（0-100），则合并而非新建
 merge_threshold: 75
 
+# --- Import safety / 大文件导入安全 ---
+# Conversation-history import defaults to smaller chunks and no automatic merge.
+# 对话历史导入默认小窗处理，且不自动合并，避免大文件把无关记忆揉成一个桶。
+import:
+  chunk_target_tokens: 3500          # smaller than old 10k windows to reduce mixed-topic chunks
+  extract_max_input_chars: 0         # 0 = do not hard-truncate; rely on chunking
+  max_items_per_chunk: 5
+  max_tags: 6
+  max_tag_chars: 12
+  auto_merge_enabled: false          # exact/safe duplicate skip still runs
+  merge_threshold: 90
+  merge_min_content_similarity: 92
+  merge_require_domain_overlap: true
+  merge_require_source_match: true
+  merge_block_disjoint_dates: true
+
 # --- Write path / 写入路径 ---
 # Semantic related-memory lookup is useful, but should not hold MCP responses
 # forever when the embedding provider is slow.
