@@ -1464,6 +1464,7 @@ class GatewayService:
             self.date_recall_enabled
             and self._query_requests_date_recall(current_user_query)
         )
+        low_signal_auto_recall = self._auto_recall_low_signal_query(current_user_query)
         mark_step("classify_request", stage_started_at)
 
         persona_block = ""
@@ -1516,6 +1517,7 @@ class GatewayService:
                 or needs_handoff_first
                 or just_now_context_requested
                 or date_recall_requested
+                or low_signal_auto_recall
             )
             mark_step("targeted_skip_check", stage_started_at)
             if needs_handoff_first:
@@ -1550,6 +1552,8 @@ class GatewayService:
                     all_buckets,
                 )
                 mark_step("date_recall", stage_started_at)
+            elif low_signal_auto_recall:
+                query_planner_debug["skip_reason"] = "low_signal_auto_recall"
             if self.persona_engine.enabled and self._should_inject_interval(
                 session_id,
                 self.current_inner_state_interval_rounds,
@@ -1861,6 +1865,7 @@ class GatewayService:
             "just_now_context_requested": just_now_context_requested,
             "date_recall_requested": date_recall_requested,
             "date_persona_trace_requested": date_persona_trace_requested,
+            "low_signal_auto_recall": low_signal_auto_recall,
             "skip_broad_dynamic_recall": skip_broad_dynamic_recall,
             "retrieval_mode": self.retrieval_mode,
             "context_mode": context_mode,
@@ -5263,6 +5268,8 @@ class GatewayService:
             return True
         if has_handoff_context:
             return False
+        if self._auto_recall_low_signal_query(query_text):
+            return False
         if self._auto_query_too_vague(query_text):
             return False
         if self._recent_context_in_cooldown(session_id):
@@ -7842,6 +7849,43 @@ class GatewayService:
 
     def _auto_query_too_vague(self, query: str) -> bool:
         return self.recall_policy.is_auto_query_too_vague(query)
+
+    def _auto_recall_low_signal_query(self, query: str) -> bool:
+        text = str(query or "").strip()
+        if not text:
+            return True
+        if self._query_requests_recent_context(text) or self._query_requests_just_now_context(text):
+            return False
+        if self._query_requests_date_recall(text) or self._query_requests_date_persona_trace(text):
+            return False
+        if self._auto_query_too_vague(text):
+            return True
+        normalized = self._normalized_recall_query(text)
+        if self._extract_exact_anchor_terms(text, normalized):
+            return False
+        if self.recall_policy.requires_topic_evidence(text):
+            return False
+        if self._query_has_relevance_facet(text):
+            return False
+        if self.recall_policy.is_auto_concrete_topic_query(text):
+            return False
+
+        compact = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text.lower())
+        if not compact:
+            return True
+        cjk_chars = re.findall(r"[\u4e00-\u9fff]", compact)
+        latin_words = re.findall(r"[a-z][a-z0-9_.:-]*", text.lower())
+        if not cjk_chars and latin_words and len(latin_words) <= 2 and len(compact) <= 16:
+            return True
+        if cjk_chars and len(cjk_chars) <= 4:
+            terms = [
+                term
+                for term in self._specific_query_terms(text)
+                if re.search(r"[\u4e00-\u9fffA-Za-z0-9]", str(term or ""))
+            ]
+            if not terms:
+                return True
+        return False
 
     def _recent_context_requires_topic_evidence(self, query: str) -> bool:
         return self._recall_query_plan(query).recent_context_requires_topic_evidence

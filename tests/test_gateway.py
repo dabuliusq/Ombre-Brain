@@ -4858,6 +4858,7 @@ def test_gateway_recent_context_stays_on_explicit_topic(
         "🥺",
         "qwq",
         "哈哈",
+        "ping",
     ],
 )
 def test_gateway_auto_vague_query_suppresses_recent_and_dynamic_memory(
@@ -8424,6 +8425,49 @@ def test_exact_anchor_short_code_candidate_without_keyword_or_embedding(
     assert [bucket["id"] for bucket in selected] == [target_id]
     assert planner_debug["exact_anchor_hints"]["bucket_ids"] == [target_id]
     assert planner_debug["exact_anchor_hints"]["terms"] == ["030"]
+
+
+def test_low_signal_gate_keeps_exact_short_code_recall(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=500,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="bucket",
+        word_map_hint_enabled=False,
+        inject_total_budget=1600,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n暗号 u3u 是一条必须按原话命中的小记录。",
+        name="u3u 暗号",
+        hours_ago=12,
+        tags=["暗号"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    monkeypatch.setattr(service, "_get_keyword_candidates", lambda query_text, eligible: {})
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "u3u"}]},
+            "sess-low-signal-exact-code",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert target_id in recalled_ids
+    assert "Recalled Memory" in injected
+    assert "u3u 暗号" in injected
+    assert debug["prepare_timing_debug"]["low_signal_auto_recall"] is False
+    assert debug["query_planner_debug"]["exact_anchor_hints"]["bucket_ids"] == [target_id]
 
 
 def test_exact_anchor_ignores_configured_identity_name_alone(
