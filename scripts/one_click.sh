@@ -2003,6 +2003,24 @@ migration_bucket_files_apply() {
   migration_bucket_files_prompt "迁移 buckets/comments 应用"
 }
 
+migration_darkroom_merge_active_once() {
+  migration_prepare_target "合并旧 darkroom active 条目为一个 room（建议只用一次）" || return 1
+  printf '这一步只处理 visibility=active 且没有 room_id 的旧 darkroom 条目。\n'
+  printf '已经有 room_id 的条目、archived、retracted 都不会改。\n'
+  printf '脚本会先备份 state/darkroom/entries.jsonl，再写入同一个 room_id 和 revision=1..n。\n'
+  if ! prompt_yes_no '确认执行这个一次性合并吗' 'n'; then
+    return 0
+  fi
+  if [[ "${DEPLOY_TARGET}" == "python" ]]; then
+    local python_cmd
+    python_cmd="$(detect_python_cmd)" || return 1
+    load_python_direct_env
+    PYTHONIOENCODING=utf-8 "${python_cmd}" scripts/migrate_darkroom_active_room.py --apply --yes
+  else
+    run_target_shell "PYTHONIOENCODING=utf-8 python scripts/migrate_darkroom_active_room.py --apply --yes"
+  fi
+}
+
 migration_menu() {
   local choice
   while true; do
@@ -2021,8 +2039,9 @@ migration_menu() {
     printf '11. 删除已迁移旧 feel\n'
     printf '12. 预演迁移 buckets/comments 到当前 v2\n'
     printf '13. 应用迁移 buckets/comments 到当前 v2\n'
+    printf '14. 合并旧 darkroom active 条目为一个 room（建议只用一次）\n'
     printf '0. 返回上一级\n'
-    if ! read -r -p '输入（0-13）：' choice; then
+    if ! read -r -p '输入（0-14）：' choice; then
       printf '\n'
       return 0
     fi
@@ -2040,8 +2059,9 @@ migration_menu() {
       11) migration_cleanup_feels_apply; pause ;;
       12) migration_bucket_files_plan; pause ;;
       13) migration_bucket_files_apply; pause ;;
+      14) migration_darkroom_merge_active_once; pause ;;
       0) return 0 ;;
-      *) printf '请输入 0-13。\n' ;;
+      *) printf '请输入 0-14。\n' ;;
     esac
   done
 }

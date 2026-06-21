@@ -369,19 +369,19 @@ async def test_introspection_profile_fact_candidates_skip_configured_ai_name(mon
     import server
 
     await bucket_mgr.create(
-        content="小雨喜欢Lapis。",
-        name="亲昵表达",
+        content="用户喜欢Lapis。",
+        name="普通表达",
         created="2026-05-04T00:00:00+00:00",
     )
     evidence_id = await bucket_mgr.create(
-        content="小雨喜欢蓝色。",
+        content="用户喜欢蓝色。",
         name="喜欢蓝色",
         created="2026-05-03T00:00:00+00:00",
     )
     monkeypatch.setattr(
         server,
         "config",
-        {"identity": {"ai_name": "Lapis", "user_name": "Rain", "user_display_name": "小雨"}},
+        {"identity": {"ai_name": "Lapis", "user_name": "TestUser", "user_display_name": "用户"}},
     )
     monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
     monkeypatch.setattr(server, "decay_engine", decay_eng)
@@ -389,8 +389,8 @@ async def test_introspection_profile_fact_candidates_skip_configured_ai_name(mon
 
     result = await server.introspection()
 
-    assert 'profile_fact(fact="小雨喜欢Lapis。"' not in result
-    assert 'profile_fact(fact="小雨喜欢蓝色。"' in result
+    assert 'profile_fact(fact="用户喜欢Lapis。"' not in result
+    assert 'object_value="蓝色"' in result
     assert f"证据桶: {evidence_id}" in result
 
 
@@ -2067,7 +2067,7 @@ async def test_identity_semantics_api_rebuilds_aliases_from_evidence_buckets(
                     "private_relation.title_marker": {
                         "scope": "private_relationship",
                         "group": "shared",
-                        "seed_aliases": ["专属称呼"],
+                        "seed_aliases": ["私密昵称"],
                     }
                 }
             },
@@ -2083,13 +2083,13 @@ async def test_identity_semantics_api_rebuilds_aliases_from_evidence_buckets(
         },
     }
     anchor_id = await bucket_mgr.create(
-        content="这条 anchor 里出现专属称呼。",
+        content="这条 anchor 里出现私密昵称。",
         name="关系证据",
         tags=["relationship_event"],
         anchor=True,
     )
     await bucket_mgr.create(
-        content="普通桶也出现专属称呼，但不该作为私有 alias 证据。",
+        content="普通桶也出现私密昵称，但不该作为私有 alias 证据。",
         name="普通桶",
     )
 
@@ -2107,7 +2107,7 @@ async def test_identity_semantics_api_rebuilds_aliases_from_evidence_buckets(
     assert payload["enabled"] is True
     assert payload["stats"] == {"canonical": 1, "aliases": 1, "evidence": 1}
     assert payload["aliases"][0]["canonical"] == "private_relation.title_marker"
-    assert payload["aliases"][0]["alias"] == "专属称呼"
+    assert payload["aliases"][0]["alias"] == "私密昵称"
     assert payload["aliases"][0]["evidence_bucket_ids"] == [anchor_id]
 
     get_response = await server.api_identity_semantics(DummyRequest(query_params={"limit": "10"}))
@@ -2134,7 +2134,7 @@ async def test_word_map_api_rebuild_excludes_private_identity_seed_terms(
                     "private_relation.title_marker": {
                         "scope": "private_relationship",
                         "group": "shared",
-                        "seed_aliases": ["专属称呼"],
+                        "seed_aliases": ["私密昵称"],
                     }
                 }
             },
@@ -2155,11 +2155,11 @@ async def test_word_map_api_rebuild_excludes_private_identity_seed_terms(
         },
     }
     bucket_id = await bucket_mgr.create(
-        content="这段关系里会出现专属称呼，也会出现公共称呼。",
+        content="这段关系里会出现私密昵称，也会出现公共称呼。",
         name="称呼样例",
         tags=["relationship_event"],
         domain=["关系"],
-        extra_metadata={"keywords": ["专属称呼", "公共称呼"]},
+        extra_metadata={"keywords": ["私密昵称", "公共称呼"]},
     )
 
     monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
@@ -2175,8 +2175,8 @@ async def test_word_map_api_rebuild_excludes_private_identity_seed_terms(
 
     assert response.status_code == 200
     assert payload["status"] == "rebuilt"
-    assert "专属称呼" in payload["private_terms_excluded"]
-    assert "专属称呼" not in terms
+    assert "私密昵称" in payload["private_terms_excluded"]
+    assert "私密昵称" not in terms
     assert "公共称呼" in terms
 
     cards_response = await server.api_word_map_cards(
