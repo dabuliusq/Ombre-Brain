@@ -72,7 +72,7 @@ from persona_event_selection import (
     format_persona_event_trace_line,
     select_persona_events,
 )
-from raw_events import RawEventStore, raw_event_text_looks_injected
+from raw_events import RawEventStore, raw_event_text_looks_injected, strip_raw_client_context
 from reranker_engine import RerankerEngine
 from self_anchor import is_self_anchor_bucket, is_self_anchor_metadata
 from source_refs import source_ref_window
@@ -5854,7 +5854,7 @@ class GatewayService:
         return parsed.strftime("%Y-%m-%d %H:%M")
 
     def _clean_conversation_turn_text(self, text: Any) -> str:
-        cleaned = str(text or "").strip()
+        cleaned = strip_raw_client_context(str(text or "").strip())
         cleaner = getattr(self.persona_engine, "_clean_client_status_lines", None)
         if callable(cleaner):
             try:

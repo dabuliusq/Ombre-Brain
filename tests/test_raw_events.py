@@ -83,6 +83,33 @@ def test_raw_event_store_keeps_only_user_assistant_originals(tmp_path):
     assert search["items"][0]["text"] == "小雨说这句原话要永远保留。"
 
 
+def test_raw_event_store_strips_client_context_attachments(tmp_path):
+    store = RawEventStore(_config(tmp_path))
+
+    result = store.ingest(
+        [
+            {
+                "source_event_id": "u-auto-context",
+                "role": "user",
+                "text": (
+                    "这句是用户原文 "
+                    "<attachment id=\"message_insert_extra_bundle_1\" filename=\"Time:11:07\" "
+                    "type=\"text/plain\">【当前时间】 2026-06-22 11:07:21</attachment>"
+                    " 结尾"
+                ),
+            }
+        ],
+        source="gateway",
+    )
+
+    assert result["inserted"] == 1
+    search = store.search("用户原文", source="gateway")
+    assert search["count"] == 1
+    assert search["items"][0]["text"] == "这句是用户原文 结尾"
+    assert "attachment" not in search["items"][0]["text"]
+    assert "当前时间" not in search["items"][0]["text"]
+
+
 @pytest.mark.asyncio
 async def test_raw_event_http_ingest_and_search(monkeypatch, tmp_path):
     import server

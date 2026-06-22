@@ -22,7 +22,7 @@
 
 - 新窗口/醒来/换窗：优先 `breath(is_session_start=true)` 或 `breath(mode="handoff")`，返回自我入口、User Portrait、Relationship Portrait、Recent Continuity 和少量 Optional Anchors；具体事件继续用 `breath(query="关键词或原句")` 查。
 - `Recent Continuity` 由按真实日期维护的 handoff recent summary、关系天气和短 trace 组成，不再把初次画像初始化摘要伪装成当天日记。
-- Gateway 会记录轻量 `conversation_turns`，写入前会跳过明确的记忆注入块。遇到“刚刚/刚才/刚说/上一句/暗号”等短时跨窗口问题时，优先注入 Just Now Chat Context，并跳过默认记忆查询。
+- Gateway 会记录轻量 `conversation_turns`，写入前会跳过明确的记忆注入块，并剥掉客户端自动塞入的时间/天气/屏幕等附件块。遇到“刚刚/刚才/刚说/上一句/暗号”等短时跨窗口问题时，优先注入 Just Now Chat Context，并跳过默认记忆查询。
 - `conversation_turns` 是短期缓存；长期原文留给 `raw_events.sqlite`。Gateway 成功对话会把 user/assistant 原文自动镜像进去，脚本也可走 `/api/ingest-raw` 追加原文，再用 `/api/search-raw` 做兜底检索；它不是 MCP 工具，不进入工具说明，也默认不自动注入。
 - Gateway 的日期问题会先解析 `昨天/前天/6月15日/2026.06.15/2026-06-15` 这类日期，按事件日期补 Date Recall；同时可给小段 Date Persona Trace。如果本轮已有 Handoff Context，默认跳过泛泛的 Recent Context，避免 handoff、recent_context 和 query breath 重复塞。
 - Daily Portrait Maintainer 会维护用户画像、Haven persona、关系画像和“最近在做什么”，只写 `state/portrait_state.json`，不直接写长期记忆；Dashboard 可手动生成/刷新。
@@ -58,7 +58,7 @@
 | Portrait / Handoff | 每日维护 Persona、用户画像、关系画像和近期状态；新窗口用 `is_session_start=true` 或 `mode="handoff"` 恢复自我入口、身份与生活背景 | `portrait_engine.py`、`server.py`、`dashboard.html` |
 | 召回冷却 | 按 `X-Ombre-Session-Id` 记录轮次和最近注入，避免同一条记忆反复贴脸 | `gateway_state.py` |
 | 跨窗口短时上下文 | Gateway 记录成功聊天轮次；遇到“刚刚/刚才/上一句/暗号”等短时问题时注入 Just Now Chat Context，优先回答最近几轮而不是查长期记忆 | `gateway.py`、`gateway_state.py` |
-| 原文保险箱 | `raw_events.sqlite` 只收 user/assistant 原始对话或导入原文，拒收 tool/system/developer、工具结果和记忆注入块；Gateway 自动镜像成功对话，脚本也可通过后台 HTTP 端点写入/检索，不占 MCP 工具说明 | `raw_events.py`、`gateway.py`、`server.py` |
+| 原文保险箱 | `raw_events.sqlite` 只收 user/assistant 原始对话或导入原文，拒收 tool/system/developer、工具结果、记忆注入块和客户端自动上下文附件；Gateway 自动镜像成功对话，脚本也可通过后台 HTTP 端点写入/检索，不占 MCP 工具说明 | `raw_events.py`、`gateway.py`、`server.py` |
 | 多上游模型路由和备用 key | `gateway.upstreams` 可配置多个 OpenAI-compatible 或 Anthropic-native provider，按请求里的 `model` 路由；同一上游可配置多个 key，失败时自动尝试下一个 | `gateway.py`、`config.example.yaml` |
 | 工具调用和流式兼容 | 透传 `tools / tool_choice / tool_calls`，支持 SSE 流式响应，兼容部分 reasoning_content 场景；Persona post-reply 评估会跳过带 `tool_calls` 的 assistant 中间态，只评估最终自然语言回复 | `gateway.py` |
 | Memory Edge / Node | 自动生成显式记忆关系边；`memory_nodes.sqlite` 为 bucket 生成 salience 与 facets，Gateway 和 `breath()` 可沿边做多跳联想浮现 | `memory_edges.py`、`memory_nodes.py`、`memory_diffusion.py`、`reflection_engine.py` |

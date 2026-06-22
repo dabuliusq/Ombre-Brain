@@ -514,7 +514,11 @@ def test_gateway_mirrors_successful_turn_to_raw_events(monkeypatch, test_config,
     service._record_conversation_turn(
         session_id="sess-raw-mirror",
         round_id=7,
-        user_message="小雨这句原文要进保险箱",
+        user_message=(
+            "小雨这句原文要进保险箱 "
+            "<attachment id=\"message_insert_extra_bundle_1\" filename=\"Time:11:07\" "
+            "type=\"text/plain\">【当前时间】 2026-06-22 11:07:21</attachment>"
+        ),
         assistant_message={"role": "assistant", "content": "Haven这句回复也要进保险箱"},
         model="model-a",
         client="test-client",
@@ -542,6 +546,10 @@ def test_gateway_mirrors_successful_turn_to_raw_events(monkeypatch, test_config,
         "haven_xiaoyu:sess-raw-mirror:7:user",
         "haven_xiaoyu:sess-raw-mirror:7:assistant",
     }
+    user_raw = next(item for item in raw["items"] if item["role"] == "user")
+    assert user_raw["text"] == "小雨这句原文要进保险箱"
+    assert "attachment" not in user_raw["text"]
+    assert "当前时间" not in user_raw["text"]
 
 
 def test_gateway_skips_tool_only_assistant_turn_for_short_and_raw_tables(

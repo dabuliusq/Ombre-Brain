@@ -22,6 +22,50 @@ INJECTION_SECTION_RE = re.compile(
     r"Long-term State Summary"
     r")\s*:?\s*$"
 )
+CLIENT_ATTACHMENT_RE = re.compile(r"<attachment\b[^>]*>[\s\S]*?</attachment>", re.IGNORECASE)
+SELF_CLOSING_ATTACHMENT_RE = re.compile(r"<attachment\b[^>]*/>", re.IGNORECASE)
+WORKSPACE_ATTACHMENT_RE = re.compile(
+    r"<workspace_attachment>[\s\S]*?</workspace_attachment>",
+    re.IGNORECASE,
+)
+CLIENT_CONTEXT_BLOCK_TITLES = {
+    "当前时间",
+    "当前电量",
+    "当前天气",
+    "当前位置",
+    "当前屏幕应用",
+    "应用使用时长",
+    "最近通知",
+    "相关记忆",
+    "屏幕文本",
+}
+
+
+def strip_raw_client_context(text: str) -> str:
+    cleaned = WORKSPACE_ATTACHMENT_RE.sub("", str(text or ""))
+    cleaned = CLIENT_ATTACHMENT_RE.sub("", cleaned)
+    cleaned = SELF_CLOSING_ATTACHMENT_RE.sub("", cleaned)
+    cleaned = _strip_client_context_blocks(cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _strip_client_context_blocks(text: str) -> str:
+    kept: list[str] = []
+    skipping = False
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        title = ""
+        if stripped.startswith("【") and "】" in stripped:
+            title = stripped[1 : stripped.index("】")].strip()
+        if title:
+            skipping = title in CLIENT_CONTEXT_BLOCK_TITLES
+            if skipping:
+                continue
+        if not skipping:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def raw_event_text_looks_injected(text: str, raw: dict[str, Any] | None = None) -> bool:
@@ -271,7 +315,7 @@ class RawEventStore:
         role = str(raw.get("role") or "").strip().lower()
         if role not in ALLOWED_RAW_ROLES:
             return None, "invalid_role"
-        text = self._coerce_text(raw.get("text", raw.get("content", ""))).strip()
+        text = strip_raw_client_context(self._coerce_text(raw.get("text", raw.get("content", ""))))
         if not text:
             return None, "empty_text"
         if self._looks_injected(text, raw):
