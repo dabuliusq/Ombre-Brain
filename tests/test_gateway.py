@@ -388,6 +388,28 @@ def test_gateway_private_context_adds_identity_boundary(monkeypatch, test_config
     assert "Recalled Memory" in dynamic
 
 
+def test_gateway_identity_terms_feed_query_filters(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(test_config)
+    cfg["identity"] = {
+        "ai_name": "Echo",
+        "user_name": "Mira",
+        "user_display_name": "MiraDisplay",
+        "user_aliases": ["Dear"],
+    }
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    assert service._just_now_query_terms("MiraDisplay bluecode") == ["bluecode"]
+    assert service._query_has_concrete_targeted_detail_anchor("MiraDisplay") is False
+    assert service._source_record_fragment_topic_term_allowed("MiraDisplay", ["miradisplay"]) is False
+    assert service._classify_context_mode(
+        "MiraDisplay",
+        {
+            "affect": {"tenderness": 0.8, "longing": 0.5, "security": 0.8},
+            "relationship": {"defensiveness": 0.0},
+        },
+    ) == "intimate"
+
+
 def _create_moment_diffusion_pair(
     bucket_mgr,
     config: dict,
@@ -1250,7 +1272,7 @@ def test_gateway_defaults_anthropic_session_id(monkeypatch, test_config, bucket_
     assert last_message["role"] == "user"
     assert "Long-term State Summary" in last_message["content"]
     assert last_message["content"].endswith("你好")
-    assert state_store.get_recent_bucket_ids("xiaoyu-main", 5) == set()
+    assert state_store.get_recent_bucket_ids("main", 5) == set()
 
 
 def test_gateway_maps_anthropic_image_blocks(monkeypatch, test_config, bucket_mgr):

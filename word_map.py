@@ -9,6 +9,8 @@ from typing import Any
 import jieba
 import jieba.analyse
 
+from favorite_tags import favorite_memory_aliases
+from identity import identity_names
 from utils import now_iso, strip_affect_anchor, strip_wikilinks
 
 
@@ -57,7 +59,6 @@ DEFAULT_WORD_MAP_STOPWORDS = {
     "event",
     "favorite",
     "feel",
-    "haven_favorite",
     "memory",
     "moment",
     "original",
@@ -163,8 +164,6 @@ DEFAULT_OVERVIEW_PRIORITY_TERMS = {
 }
 DEFAULT_OVERVIEW_HUB_TERMS = {
     "ombre-brain",
-    "haven",
-    "小雨",
 }
 DEFAULT_WEAK_HINT_TERMS = {
     "人机恋",
@@ -203,6 +202,7 @@ class WordMapStore:
             for item in itertools.chain(
                 DEFAULT_WORD_MAP_STOPWORDS,
                 _identity_stopwords(config),
+                _favorite_tag_stopwords(config),
                 cfg.get("stopwords", []) or [],
             )
             if _normalize_term(item)
@@ -243,7 +243,11 @@ class WordMapStore:
         }
         self.overview_hub_terms = {
             _normalize_term(item)
-            for item in itertools.chain(DEFAULT_OVERVIEW_HUB_TERMS, cfg.get("overview_hub_terms", []) or [])
+            for item in itertools.chain(
+                DEFAULT_OVERVIEW_HUB_TERMS,
+                _identity_stopwords(config),
+                cfg.get("overview_hub_terms", []) or [],
+            )
             if _normalize_term(item)
         }
         self.weak_hint_terms = {
@@ -1106,14 +1110,21 @@ def _empty_hint_payload(terms: list[str] | None = None) -> dict[str, Any]:
 
 
 def _identity_stopwords(config: dict[str, Any]) -> list[str]:
-    identity = config.get("identity", {}) if isinstance(config.get("identity", {}), dict) else {}
+    identity = identity_names(config if isinstance(config, dict) else None)
     values = [
         identity.get("ai_name"),
         identity.get("user_name"),
         identity.get("user_display_name"),
     ]
-    values.extend(identity.get("user_aliases") or [])
+    values.extend(identity.get("relationship_terms") or [])
     return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _favorite_tag_stopwords(config: dict[str, Any]) -> list[str]:
+    identity = identity_names(config if isinstance(config, dict) else None)
+    aliases = favorite_memory_aliases(identity.get("ai_name"))
+    aliases.add("favorite_memory")
+    return sorted(aliases)
 
 
 def reflection_identity_terms(config: dict[str, Any]) -> list[str]:

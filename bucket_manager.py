@@ -469,7 +469,7 @@ class BucketManager:
         bucket_id: str,
         content: str,
         *,
-        author: str = "Haven",
+        author: str | None = None,
         kind: str = "comment",
         valence: float | None = None,
         arousal: float | None = None,
@@ -497,10 +497,11 @@ class BucketManager:
 
         now = now_iso()
         created_at = str(created or now).strip() or now
+        default_author = identity_names(self.config).get("ai_name") or "AI"
         entry = {
             "id": generate_bucket_id(),
             "created": created_at,
-            "author": str(author or "Haven"),
+            "author": str(author or default_author),
             "kind": str(kind or "comment"),
             "content": str(content).strip(),
         }

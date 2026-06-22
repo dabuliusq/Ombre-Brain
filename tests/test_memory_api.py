@@ -395,6 +395,31 @@ async def test_introspection_profile_fact_candidates_skip_configured_ai_name(mon
 
 
 @pytest.mark.asyncio
+async def test_introspection_profile_fact_candidates_use_configured_user_name(monkeypatch, bucket_mgr, decay_eng):
+    import server
+
+    evidence_id = await bucket_mgr.create(
+        content="MiraDisplay喜欢蓝色。",
+        name="喜欢蓝色",
+        created="2026-05-03T00:00:00+00:00",
+    )
+    monkeypatch.setattr(
+        server,
+        "config",
+        {"identity": {"ai_name": "Echo", "user_name": "Mira", "user_display_name": "MiraDisplay"}},
+    )
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "decay_engine", decay_eng)
+    monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+
+    result = await server.introspection()
+
+    assert "MiraDisplay喜欢蓝色。" in result
+    assert 'profile_fact(fact="MiraDisplay喜欢蓝色。"' in result
+    assert f"证据桶: {evidence_id}" in result
+
+
+@pytest.mark.asyncio
 async def test_create_memory_api_writes_chatgpt_source(monkeypatch, bucket_mgr):
     import server
 
@@ -443,6 +468,51 @@ def test_favorite_reflection_heading_aliases():
         assert server._has_favorite_reason(f"小雨把这一刻留下来。\n\n### {heading}\n\nHaven偏爱这里的温度。")
 
     assert not server._has_favorite_reason("小雨只是提到喜欢它的原因这几个字，但没有写成段落。")
+
+
+def test_favorite_reflection_heading_uses_configured_ai_name(monkeypatch):
+    import server
+
+    monkeypatch.setattr(
+        server,
+        "config",
+        {
+            **server.config,
+            "identity": {
+                "ai_name": "Echo",
+                "user_name": "Mira",
+                "user_display_name": "米拉",
+            },
+        },
+    )
+
+    assert server._has_favorite_reason("米拉把这一刻留下来。\n\n### Echo喜欢它的原因\n\n我偏爱这里。")
+
+
+def test_handoff_persona_event_phrase_uses_configured_identity(monkeypatch):
+    import server
+
+    monkeypatch.setattr(
+        server,
+        "config",
+        {
+            **server.config,
+            "identity": {
+                "ai_name": "Echo",
+                "user_name": "Mira",
+                "user_display_name": "米拉",
+            },
+        },
+    )
+
+    phrase = server._handoff_persona_event_phrase(
+        {
+            "user_excerpt": "今天要换名字测试。",
+            "assistant_excerpt": "我跟着配置走。",
+        }
+    )
+
+    assert phrase == "米拉说“今天要换名字测试。”；Echo回“我跟着配置走。”"
 
 
 @pytest.mark.asyncio
@@ -2115,6 +2185,24 @@ async def test_identity_semantics_api_rebuilds_aliases_from_evidence_buckets(
     assert get_payload["aliases"][0]["evidence_bucket_ids"] == [anchor_id]
 
 
+def test_identity_semantics_default_evidence_tags_use_configured_ai_name(test_config):
+    from identity_semantics import IdentitySemanticStore
+
+    cfg = {
+        **test_config,
+        "identity": {
+            "ai_name": "Echo",
+            "user_name": "Mira",
+            "user_display_name": "米拉",
+        },
+    }
+    store = IdentitySemanticStore(cfg)
+
+    assert "echo_favorite" in store.evidence_tags
+    assert "haven_favorite" in store.evidence_tags
+    assert "favorite_memory" in store.evidence_tags
+
+
 @pytest.mark.asyncio
 async def test_word_map_api_rebuild_excludes_private_identity_seed_terms(
     monkeypatch,
@@ -2372,6 +2460,20 @@ async def test_comment_bucket_uses_configured_ai_author(monkeypatch, bucket_mgr,
     bucket = await bucket_mgr.get(bucket_id)
 
     assert bucket["metadata"]["comments"][0]["author"] == "Echo"
+
+
+@pytest.mark.asyncio
+async def test_bucket_manager_comment_default_author_uses_identity(bucket_mgr):
+    bucket_mgr.config["identity"] = {
+        "ai_name": "Echo",
+        "user_name": "Mira",
+        "user_display_name": "米拉",
+    }
+    bucket_id = await bucket_mgr.create(content="一条可评论的旧记忆。", name="旧记忆")
+
+    entry = await bucket_mgr.add_comment(bucket_id, "默认作者应该跟随配置。")
+
+    assert entry["author"] == "Echo"
 
 
 @pytest.mark.asyncio

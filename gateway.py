@@ -150,8 +150,6 @@ SOURCE_RECORD_FRAGMENT_TOPIC_STOPWORDS = QUERY_PLANNER_GENERIC_TERMS | {
     "写着",
     "提出",
     "答应",
-    "haven",
-    "小雨",
     "哥哥",
     "宝宝",
     "老婆",
@@ -327,7 +325,7 @@ class GatewayService:
         self.upstream_api_key = os.environ.get("OMBRE_GATEWAY_UPSTREAM_API_KEY", "")
         self.upstream_base_url = self.gateway_cfg.get("upstream_base_url", "").rstrip("/")
         self.upstream_default_model = self.gateway_cfg.get("upstream_default_model", "")
-        self.default_session_id = str(self.gateway_cfg.get("default_session_id") or "xiaoyu-main").strip()
+        self.default_session_id = str(self.gateway_cfg.get("default_session_id") or "main").strip()
         self.upstream_models = self._normalize_model_list(
             self.gateway_cfg.get("upstream_models", []),
             self.upstream_default_model,
@@ -2884,8 +2882,7 @@ class GatewayService:
         intent = self._targeted_memory_detail_intent(query)
         return bool(intent.get("reflection") or intent.get("favorite_reason"))
 
-    @staticmethod
-    def _query_has_concrete_targeted_detail_anchor(query: str) -> bool:
+    def _query_has_concrete_targeted_detail_anchor(self, query: str) -> bool:
         text = str(query or "").strip().lower()
         if not text:
             return False
@@ -2938,14 +2935,12 @@ class GatewayService:
             "为什么",
             "你",
             "我",
-            "小雨",
-            "haven",
             "吗",
             "呢",
             "了",
             "的",
         )
-        for term in noise_terms:
+        for term in sorted((*noise_terms, *self._identity_match_terms(lowercase=True)), key=len, reverse=True):
             text = text.replace(term, "")
         compact = re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
         return len(compact) >= 3
@@ -3148,7 +3143,7 @@ class GatewayService:
         )
         blocks = [
             "Targeted private memory detail for this turn. Fetched only by bucket_id/moment_id already shown to or provided by the user. Use quietly; do not mention lookup.",
-            "reflection/favorite_reason are Haven-side understanding, not Xiaoyu profile facts.",
+            f"reflection/favorite_reason are {self.identity['ai_name']}-side understanding, not {self.identity['user_display_name']} profile facts.",
         ]
         if reference_context:
             blocks.append("Reference summary/path/context already shown:\n" + reference_context)
@@ -5057,8 +5052,9 @@ class GatewayService:
             return "reflective_repair"
         if self._text_has_any(text, memory_terms):
             return "memory_lookup"
+        relationship_terms = ("你", "我们", *self._identity_match_terms(lowercase=True))
         if self._text_has_any(text, intimate_terms) or (
-            tenderness >= 0.78 and longing >= 0.45 and self._text_has_any(text, ("你", "我们", "haven", "小雨"))
+            tenderness >= 0.78 and longing >= 0.45 and self._text_has_any(text, relationship_terms)
         ):
             return "intimate"
         if self._text_has_any(text, playful_terms):
@@ -5070,6 +5066,32 @@ class GatewayService:
     @staticmethod
     def _text_has_any(text: str, terms: tuple[str, ...]) -> bool:
         return any(term and term in text for term in terms)
+
+    def _identity_match_terms(self, *, lowercase: bool = False, compact: bool = False) -> tuple[str, ...]:
+        values: list[object] = []
+        values.extend(self.identity.get("relationship_terms") or [])
+        values.extend(
+            [
+                self.identity.get("ai_name"),
+                self.identity.get("user_name"),
+                self.identity.get("user_display_name"),
+            ]
+        )
+        values.extend(self.identity.get("user_aliases") or [])
+        terms: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            term = str(value or "").strip()
+            if not term:
+                continue
+            if lowercase:
+                term = term.lower()
+            if compact:
+                term = self._compact_lookup_key(term)
+            if term and term not in seen:
+                seen.add(term)
+                terms.append(term)
+        return tuple(terms)
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -5820,15 +5842,15 @@ class GatewayService:
                 return matched
         return turns
 
-    @staticmethod
-    def _just_now_query_terms(query_text: str) -> list[str]:
+    def _just_now_query_terms(self, query_text: str) -> list[str]:
         text = str(query_text or "")
         stop_terms = {
             "刚刚", "刚才", "刚说", "刚聊", "刚提", "上一句", "上句话",
-            "我们", "我们的", "你", "我", "小雨", "哥哥", "记得", "还记得",
+            "我们", "我们的", "你", "我", "哥哥", "记得", "还记得",
             "记不记得", "是什么", "什么", "那个", "这个", "一下", "吗", "呀",
             "呢", "了", "的",
         }
+        stop_terms.update(self._identity_match_terms())
         raw_terms = re.findall(r"[\u4e00-\u9fffA-Za-z0-9_]{2,}", text)
         terms: list[str] = []
         for term in raw_terms:
@@ -6549,7 +6571,9 @@ class GatewayService:
 
     def _source_record_fragment_topic_term_allowed(self, term: str, query_keys: list[str]) -> bool:
         key = self._compact_lookup_key(term)
-        if len(key) < 2 or key in SOURCE_RECORD_FRAGMENT_TOPIC_STOPWORDS:
+        stopwords = set(SOURCE_RECORD_FRAGMENT_TOPIC_STOPWORDS)
+        stopwords.update(self._identity_match_terms(compact=True))
+        if len(key) < 2 or key in stopwords:
             return False
         if len(key) > 24:
             return False

@@ -7,6 +7,8 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
+from favorite_tags import favorite_memory_aliases
+from identity import identity_names
 
 FACET_KEYWORDS = {
     "affect.attachment": (
@@ -16,7 +18,6 @@ FACET_KEYWORDS = {
         "depend",
         "possess",
         "anchor",
-        "haven_favorite",
         "\u4f9d\u8d56",
         "\u60f3\u5ff5",
         "\u5360\u6709",
@@ -47,7 +48,6 @@ FACET_KEYWORDS = {
         "intimacy",
         "relationship_event",
         "relationship_weather",
-        "haven_favorite",
         "love_letter",
         "private",
         "whisper",
@@ -55,7 +55,6 @@ FACET_KEYWORDS = {
         "\u8d34\u8d34",
         "\u60c5\u4e66",
         "\u604b\u7231",
-        "\u5c0f\u96e8",
         "\u7231",
     ),
     "relation.commitment": (
@@ -110,10 +109,8 @@ FACET_KEYWORDS = {
         "intimacy",
         "affection",
         "lover",
-        "haven_favorite",
         "flavor_",
         "\u604b\u7231",
-        "\u5c0f\u96e8",
         "\u8001\u5a46",
         "\u5b9d\u5b9d",
         "\u60f3\u4f60",
@@ -160,6 +157,7 @@ class MemoryNodeStore:
 
     def __init__(self, config: dict):
         config = config or {}
+        self.facet_keywords = _facet_keywords_for_config(config)
         node_cfg = config.get("node_facets", {}) if isinstance(config.get("node_facets", {}), dict) else {}
         self.salience_min = _clamp_float(node_cfg.get("salience_min", 0.2), 0.0, 1.0)
         self.salience_max = _clamp_float(node_cfg.get("salience_max", 1.3), 1.0, 2.0)
@@ -382,7 +380,7 @@ class MemoryNodeStore:
         fields = {key: value.lower() for key, value in fields.items()}
 
         flat_facets = {}
-        for facet, keywords in FACET_KEYWORDS.items():
+        for facet, keywords in self.facet_keywords.items():
             score = 0.0
             for keyword in keywords:
                 keyword = keyword.lower()
@@ -455,6 +453,31 @@ def _join_text(value: Any) -> str:
     if isinstance(value, (list, tuple, set)):
         return " ".join(str(item) for item in value)
     return str(value or "")
+
+
+def _facet_keywords_for_config(config: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    keywords = {facet: list(values) for facet, values in FACET_KEYWORDS.items()}
+    identity = identity_names(config if isinstance(config, dict) else None)
+    favorite_aliases = favorite_memory_aliases(identity.get("ai_name"))
+    for facet in ("affect.attachment", "relation.intimacy", "topic.love"):
+        keywords.setdefault(facet, []).extend(favorite_aliases)
+
+    raw_identity = config.get("identity", {}) if isinstance(config, dict) else {}
+    user_terms: list[str] = []
+    if isinstance(raw_identity, dict):
+        user_terms.extend(
+            [
+                raw_identity.get("user_display_name") or raw_identity.get("human_name"),
+                *(raw_identity.get("user_aliases") or []),
+            ]
+        )
+    for facet in ("relation.intimacy", "topic.love"):
+        keywords.setdefault(facet, []).extend(user_terms)
+
+    return {
+        facet: tuple(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+        for facet, values in keywords.items()
+    }
 
 
 def _nest_facets(flat_facets: dict[str, float]) -> dict[str, dict[str, float]]:

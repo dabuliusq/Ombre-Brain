@@ -6,11 +6,13 @@ from typing import Any
 
 import yaml
 
+from favorite_tags import favorite_memory_aliases
+from identity import identity_names
 from utils import now_iso, strip_affect_anchor, strip_wikilinks
 
 
 PRIVATE_SCOPE = "private_relationship"
-DEFAULT_EVIDENCE_TAGS = {"profile_fact", "haven_favorite", "favorite_memory"}
+DEFAULT_EVIDENCE_TAGS = {"profile_fact", "favorite_memory"}
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,11 @@ class CanonicalNode:
     group: str
     seed_aliases: tuple[str, ...]
     sensitivity: str = "private"
+
+
+def _default_evidence_tags(config: dict[str, Any]) -> set[str]:
+    identity = identity_names(config if isinstance(config, dict) else None)
+    return set(DEFAULT_EVIDENCE_TAGS) | favorite_memory_aliases(identity.get("ai_name"))
 
 
 class IdentitySemanticStore:
@@ -34,7 +41,7 @@ class IdentitySemanticStore:
         self.min_confidence = _float_between(cfg.get("min_confidence"), 0.78, 0.0, 1.0)
         self.evidence_tags = {
             str(item).strip()
-            for item in (cfg.get("evidence_tags") or DEFAULT_EVIDENCE_TAGS)
+            for item in (cfg.get("evidence_tags") or _default_evidence_tags(config))
             if str(item).strip()
         }
         self.db_path = str(cfg.get("db_path") or os.path.join(state_dir, "identity_semantics.sqlite"))

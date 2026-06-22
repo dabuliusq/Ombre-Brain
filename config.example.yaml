@@ -226,6 +226,12 @@ word_map:
   private_terms: []                   # Deployment-private terms to exclude from generic Word Map
   stopword_prefixes: []               # Extra prefixes such as custom_ / 额外前缀
   overview_stopwords: []              # Extra terms hidden from Top Nodes/Edges only; cards and recall hints are unaffected
+  overview_stopword_prefixes: []      # Extra prefixes hidden from Top Nodes/Edges only
+  overview_aliases: {}                # Display-only canonical aliases, e.g. {"darkroom": "暗房"}
+  overview_priority_terms: []         # Extra terms to boost in Top Nodes, without changing recall
+  overview_hub_terms: []              # Extra broad entity hubs to keep but lightly saturate in overview ranking
+  weak_hint_terms: []                  # Extra broad terms whose word-map hints should not one-hop expand
+  weak_hint_weight: 0.25               # Direct hint weight for weak terms; keyword recall is unaffected
 
 # --- Raw Events Archive / 原文保险箱 ---
 # Stores only original user/assistant text pushed through /api/ingest-raw.
@@ -233,12 +239,6 @@ word_map:
 raw_events:
   db_path: ""                          # empty = state_dir/raw_events.sqlite
   max_ingest_batch: 1000
-  overview_stopword_prefixes: []      # Extra prefixes hidden from Top Nodes/Edges only
-  overview_aliases: {}                # Display-only canonical aliases, e.g. {"darkroom": "暗房"}
-  overview_priority_terms: []         # Extra terms to boost in Top Nodes, without changing recall
-  overview_hub_terms: []              # Extra broad entity hubs to keep but lightly saturate in overview ranking
-  weak_hint_terms: []                  # Extra broad terms whose word-map hints should not one-hop expand
-  weak_hint_weight: 0.25               # Direct hint weight for weak terms; keyword recall is unaffected
 
 # --- Private identity semantics / 私有身份语义 ---
 # Optional private canonical alias overlay. Do not put personal canonical nodes
@@ -479,7 +479,7 @@ memory_relevance:
 # 追踪缓慢人格变化、关系状态，以及按会话保存的短期情绪。
 persona:
   enabled: true
-  profile_id: "haven_xiaoyu"
+  profile_id: "main_profile"
   mode: "llm"
   base_url: "https://api.deepseek.com/v1"
   model: "deepseek-chat"

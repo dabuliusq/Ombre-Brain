@@ -142,3 +142,47 @@ def test_query_facets_and_resonance_prefer_matching_dimensions(test_config):
         query_facets,
         project_node["facets"],
     )
+
+
+def test_node_facets_use_configured_identity_and_favorite_alias(test_config):
+    cfg = {
+        **test_config,
+        "identity": {
+            "ai_name": "Echo",
+            "user_name": "Mira",
+            "user_display_name": "米拉",
+            "user_aliases": ["亲爱的"],
+        },
+    }
+    store = MemoryNodeStore(cfg)
+
+    configured = store.upsert_bucket(
+        {
+            "id": "configured",
+            "metadata": {
+                "id": "configured",
+                "name": "配置名关系记忆",
+                "tags": ["echo_favorite"],
+                "domain": [],
+                "importance": 8,
+            },
+            "content": "米拉留下了一条要被偏爱的关系记忆。",
+        }
+    )
+    legacy = store.upsert_bucket(
+        {
+            "id": "legacy",
+            "metadata": {
+                "id": "legacy",
+                "name": "旧标签关系记忆",
+                "tags": ["haven_favorite"],
+                "domain": [],
+                "importance": 8,
+            },
+            "content": "旧 favorite 标签仍要算作偏爱证据。",
+        }
+    )
+
+    assert configured["facets"]["relation"]["intimacy"] > 0
+    assert configured["facets"]["topic"]["love"] > 0
+    assert legacy["facets"]["affect"]["attachment"] > 0

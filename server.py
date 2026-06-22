@@ -1561,13 +1561,16 @@ def _handoff_persona_trace_for_date(date_key: str, *, limit: int = 2) -> str:
 
 
 def _handoff_persona_event_phrase(event: dict) -> str:
+    identity = _identity()
+    user_name = identity.get("user_display_name") or identity.get("user_name") or "用户"
+    ai_name = identity.get("ai_name") or "AI"
     user_excerpt = _handoff_clean_excerpt(event.get("user_excerpt"))
     assistant_excerpt = _handoff_clean_excerpt(event.get("assistant_excerpt"))
     parts = []
     if user_excerpt:
-        parts.append(f"小雨说“{user_excerpt}”")
+        parts.append(f"{user_name}说“{user_excerpt}”")
     if assistant_excerpt:
-        parts.append(f"Haven回“{assistant_excerpt}”")
+        parts.append(f"{ai_name}回“{assistant_excerpt}”")
     if not parts:
         return ""
     return _clip_text("；".join(parts), 150)
@@ -1646,13 +1649,15 @@ def _has_favorite_tag(tags: list | set | tuple | None) -> bool:
     return has_favorite_policy_tag(tags, ai_name=_ai_author_name())
 
 
-_FAVORITE_REFLECTION_HEADINGS = {
+_BASE_FAVORITE_REFLECTION_HEADINGS = {
     "reflection",
     "assistantreflection",
-    "havenreflection",
     "favoritereason",
     "喜欢它的原因",
     "喜欢的原因",
+}
+_LEGACY_FAVORITE_REFLECTION_HEADINGS = {
+    "havenreflection",
     "haven喜欢它的原因",
     "haven喜欢的原因",
 }
@@ -1665,10 +1670,25 @@ def _normalize_section_heading(value: str) -> str:
     return re.sub(r"[\s_\-·/|（）()【】\[\]]+", "", text)
 
 
+def _favorite_reflection_headings() -> set[str]:
+    headings = set(_BASE_FAVORITE_REFLECTION_HEADINGS) | set(_LEGACY_FAVORITE_REFLECTION_HEADINGS)
+    ai_heading = _normalize_section_heading(_ai_author_name())
+    if ai_heading:
+        headings.update(
+            {
+                f"{ai_heading}reflection",
+                f"{ai_heading}喜欢它的原因",
+                f"{ai_heading}喜欢的原因",
+            }
+        )
+    return headings
+
+
 def _has_favorite_reflection(content: str) -> bool:
     text = strip_wikilinks(str(content or ""))
+    headings = _favorite_reflection_headings()
     for match in re.finditer(r"(?m)^\s{0,3}#{2,6}\s+(.+?)\s*$", text):
-        if _normalize_section_heading(match.group(1)) in _FAVORITE_REFLECTION_HEADINGS:
+        if _normalize_section_heading(match.group(1)) in headings:
             return True
     return False
 
@@ -7946,15 +7966,15 @@ async def introspection(
     return header + "\n---\n".join(parts) + connection_hint + crystal_hint + profile_hint
 
 
-PROFILE_FACT_CANDIDATE_PATTERNS = (
-    ("preference", "likes", "喜欢", re.compile(r"(?:小雨|池又雨|用户|她)\s*(?:很|最|一直|特别|偏)?喜欢\s*([^。；;，,\n]{1,32})")),
-    ("preference", "dislikes", "不喜欢", re.compile(r"(?:小雨|池又雨|用户|她)\s*(?:很|最|一直|特别)?不喜欢\s*([^。；;，,\n]{1,32})")),
-    ("preference", "dislikes", "讨厌", re.compile(r"(?:小雨|池又雨|用户|她)\s*(?:很|最|一直|特别)?讨厌\s*([^。；;，,\n]{1,32})")),
-    ("preference", "dislikes", "厌恶", re.compile(r"(?:小雨|池又雨|用户|她)\s*(?:很|最|一直|特别)?厌恶\s*([^。；;，,\n]{1,32})")),
-    ("preference", "fears", "害怕", re.compile(r"(?:小雨|池又雨|用户|她)\s*(?:很|最|一直|特别)?害怕\s*([^。；;，,\n]{1,32})")),
-    ("preference", "prefers", "偏好", re.compile(r"(?:小雨|池又雨|用户|她)\s*偏好\s*([^。；;，,\n]{1,32})")),
-    ("boundary", "boundary", "雷点", re.compile(r"(?:小雨|池又雨|用户|她)的?雷点是\s*([^。；;，,\n]{1,32})")),
-    ("habit", "habit", "习惯", re.compile(r"(?:小雨|池又雨|用户|她)(?:有个)?习惯是\s*([^。；;，,\n]{1,32})")),
+PROFILE_FACT_CANDIDATE_PATTERN_SPECS = (
+    ("preference", "likes", "喜欢", r"\s*(?:很|最|一直|特别|偏)?喜欢\s*([^。；;，,\n]{1,32})"),
+    ("preference", "dislikes", "不喜欢", r"\s*(?:很|最|一直|特别)?不喜欢\s*([^。；;，,\n]{1,32})"),
+    ("preference", "dislikes", "讨厌", r"\s*(?:很|最|一直|特别)?讨厌\s*([^。；;，,\n]{1,32})"),
+    ("preference", "dislikes", "厌恶", r"\s*(?:很|最|一直|特别)?厌恶\s*([^。；;，,\n]{1,32})"),
+    ("preference", "fears", "害怕", r"\s*(?:很|最|一直|特别)?害怕\s*([^。；;，,\n]{1,32})"),
+    ("preference", "prefers", "偏好", r"\s*偏好\s*([^。；;，,\n]{1,32})"),
+    ("boundary", "boundary", "雷点", r"的?雷点是\s*([^。；;，,\n]{1,32})"),
+    ("habit", "habit", "习惯", r"(?:有个)?习惯是\s*([^。；;，,\n]{1,32})"),
 )
 
 
@@ -7975,6 +7995,7 @@ def _profile_fact_candidate_hint(recent: list[dict], all_buckets: list[dict]) ->
     existing = _existing_profile_fact_keys(all_buckets)
     candidates = []
     seen = set()
+    patterns = _profile_fact_candidate_patterns()
     for bucket in recent:
         if len(candidates) >= 3:
             break
@@ -7982,7 +8003,7 @@ def _profile_fact_candidate_hint(recent: list[dict], all_buckets: list[dict]) ->
         if "profile_fact" in {str(tag) for tag in meta.get("tags", []) or []}:
             continue
         text = strip_wikilinks(_bucket_text_for_embedding(bucket))
-        for kind, predicate, verb, pattern in PROFILE_FACT_CANDIDATE_PATTERNS:
+        for kind, predicate, verb, pattern in patterns:
             match = pattern.search(text)
             if not match:
                 continue
@@ -8031,6 +8052,32 @@ def _profile_fact_candidate_hint(recent: list[dict], all_buckets: list[dict]) ->
     return "\n" + "\n".join(lines) + "\n"
 
 
+def _profile_fact_candidate_patterns() -> tuple[tuple[str, str, str, re.Pattern], ...]:
+    subject = _profile_fact_subject_pattern()
+    return tuple(
+        (kind, predicate, verb, re.compile(subject + tail))
+        for kind, predicate, verb, tail in PROFILE_FACT_CANDIDATE_PATTERN_SPECS
+    )
+
+
+def _profile_fact_subject_pattern() -> str:
+    identity = _identity()
+    values = [
+        identity.get("user_display_name"),
+        identity.get("user_name"),
+        *(identity.get("user_aliases") or []),
+        "用户",
+        "她",
+    ]
+    terms = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in terms:
+            terms.append(text)
+    escaped = [re.escape(term) for term in sorted(terms, key=len, reverse=True)]
+    return "(?:" + "|".join(escaped or ["用户", "她"]) + ")"
+
+
 def _existing_profile_fact_keys(buckets: list[dict]) -> set[str]:
     keys = set()
     for bucket in buckets or []:
@@ -8048,11 +8095,12 @@ def _existing_profile_fact_keys(buckets: list[dict]) -> set[str]:
 
 
 def _render_profile_fact_candidate(predicate: str, verb: str, obj: str) -> str:
+    user_name = _identity().get("user_display_name") or _identity().get("user_name") or "用户"
     if predicate == "boundary":
-        return f"小雨的雷点是{obj}。"
+        return f"{user_name}的雷点是{obj}。"
     if predicate == "habit":
-        return f"小雨的习惯是{obj}。"
-    return f"小雨{verb}{obj}。"
+        return f"{user_name}的习惯是{obj}。"
+    return f"{user_name}{verb}{obj}。"
 
 
 def _clean_profile_object(value: str) -> str:

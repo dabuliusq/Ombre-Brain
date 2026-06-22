@@ -162,6 +162,32 @@ def test_word_map_weak_hint_terms_do_not_expand_neighbors(tmp_path):
     assert all("恋爱" not in item["term"] for item in hints["neighbors"])
 
 
+def test_word_map_configured_weak_hint_terms_do_not_expand_neighbors(tmp_path):
+    store = WordMapStore(_config(tmp_path, weak_hint_terms=["泛关系"], weak_hint_weight=0.2))
+    store.rebuild(
+        [
+            _bucket(
+                "direct",
+                "泛关系这个宽词只应该弱命中直接材料。",
+                name="泛关系记录",
+                keywords=["泛关系", "具体线索"],
+            ),
+            _bucket(
+                "neighbor",
+                "这条只有相邻具体线索，不该被宽词扩出来。",
+                name="相邻记录",
+                keywords=["具体线索"],
+            ),
+        ]
+    )
+
+    hints = store.hint_buckets_for_terms(["泛关系"], neighbor_limit=6, bucket_limit=10)
+
+    assert "direct" in hints["bucket_scores"]
+    assert hints["bucket_scores"]["direct"] <= 0.2
+    assert "neighbor" not in hints["bucket_scores"]
+
+
 def test_word_map_single_character_noise_does_not_block_specific_term(tmp_path):
     store = WordMapStore(_config(tmp_path))
     store.rebuild(
@@ -385,8 +411,15 @@ def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
                 "a",
                 "TestAI 和用户讨论了咖啡风味。",
                 name="TestAI 用户 咖啡",
-                tags=["relationship_event", "emotional_echo", "profile_fact", "flavor_soft"],
-                keywords=["咖啡风味", "relationship_event"],
+                tags=[
+                    "relationship_event",
+                    "emotional_echo",
+                    "profile_fact",
+                    "flavor_soft",
+                    "testai_favorite",
+                    "haven_favorite",
+                ],
+                keywords=["咖啡风味", "relationship_event", "testai_favorite", "haven_favorite"],
                 domain=["memory"],
             ),
         ]
@@ -399,7 +432,10 @@ def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
     assert "emotional_echo" not in terms
     assert "profile_fact" not in terms
     assert "flavor_soft" not in terms
+    assert "testai_favorite" not in terms
+    assert "haven_favorite" not in terms
     assert "咖啡风味" in terms
+    assert "testai" in store.overview_hub_terms
 
 
 def test_config_example_exposes_empty_word_map_and_identity_semantics():
