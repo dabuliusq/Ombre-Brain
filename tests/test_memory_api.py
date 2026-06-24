@@ -3814,6 +3814,83 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
 
 
 @pytest.mark.asyncio
+async def test_dashboard_config_updates_gateway_upstreams_without_persisting_key_values(monkeypatch, tmp_path):
+    import server
+
+    env_path = tmp_path / ".env"
+    cfg = {
+        "gateway": {
+            "upstreams": [
+                {
+                    "name": "cw",
+                    "base_url": "https://old.example/v1",
+                    "api_key": "old-hidden-key",
+                    "models": ["old-model"],
+                }
+            ]
+        }
+    }
+    hot_update_calls = []
+
+    async def fake_hot_update(body):
+        hot_update_calls.append(body)
+        return "gateway_hot_reloaded"
+
+    monkeypatch.setenv("OMBRE_ENV_PATH", str(env_path))
+    monkeypatch.setattr(server, "config", cfg)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(server, "_hot_update_gateway_config", fake_hot_update)
+
+    response = await server.api_config_update(
+        DummyRequest(
+            {
+                "gateway": {
+                    "upstreams": [
+                        {
+                            "name": "cw",
+                            "protocol": "openai",
+                            "base_url": "https://cw.example/v1",
+                            "api_key_envs": ["OMBRE_GATEWAY_PROVIDER_CW_API_KEY_1"],
+                            "api_key_values": ["new-live-key"],
+                            "models": [
+                                {
+                                    "id": "cw/opus-thinking",
+                                    "upstream_model": "[An1¥0.15/次]claude-opus-4-6-thinking",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "persist_env": True,
+            }
+        )
+    )
+    payload = json.loads(response.body)
+    saved_upstream = cfg["gateway"]["upstreams"][0]
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert "gateway.upstreams" in payload["updated"]
+    assert "env.OMBRE_GATEWAY_PROVIDER_CW_API_KEY_1" in payload["updated"]
+    assert env_path.read_text(encoding="utf-8").strip() == (
+        "OMBRE_GATEWAY_PROVIDER_CW_API_KEY_1=new-live-key"
+    )
+    assert saved_upstream["api_key"] == "old-hidden-key"
+    assert "api_key_values" not in saved_upstream
+    assert saved_upstream["models"] == [
+        {
+            "id": "cw/opus-thinking",
+            "upstream_model": "[An1¥0.15/次]claude-opus-4-6-thinking",
+        }
+    ]
+    hot_upstream = hot_update_calls[-1]["gateway"]["upstreams"][0]
+    assert hot_upstream["api_keys"] == [
+        {"api_key": "new-live-key", "label": "env:OMBRE_GATEWAY_PROVIDER_CW_API_KEY_1"}
+    ]
+    assert hot_upstream["models"] == saved_upstream["models"]
+
+
+@pytest.mark.asyncio
 async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_config, tmp_path):
     import server
 

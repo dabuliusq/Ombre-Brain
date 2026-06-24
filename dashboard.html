@@ -777,6 +777,84 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-glow), inset 2px 2px 4px var(--shadow-dark-subtle);
   }
+  .upstream-card {
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 14px;
+    background: color-mix(in srgb, var(--bg) 68%, var(--surface));
+    box-shadow: inset 1px 1px 3px var(--shadow-dark-subtle), inset -1px -1px 3px var(--shadow-light);
+  }
+  .upstream-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .upstream-card-title {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+  .upstream-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-light);
+    flex-wrap: wrap;
+  }
+  .upstream-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--negative);
+    display: inline-block;
+  }
+  .upstream-dot.ready {
+    background: var(--positive);
+  }
+  .upstream-model-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .upstream-model-row input,
+  .upstream-card textarea {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-family: inherit;
+    font-size: 13px;
+    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
+  }
+  .upstream-card textarea {
+    width: 100%;
+    min-height: 72px;
+    resize: vertical;
+  }
+  .upstream-note {
+    font-size: 11px;
+    color: var(--text-light);
+    line-height: 1.6;
+    margin: -4px 0 12px 122px;
+  }
+  .upstream-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .upstream-mini-btn {
+    padding: 8px 12px;
+    border-radius: 12px;
+    min-width: 0;
+  }
 
   .btn-primary {
     padding: 12px 28px;
@@ -2681,6 +2759,17 @@
     </div>
 
     <div class="config-section">
+      <h3>Gateway 上游模型</h3>
+      <div id="cfg-upstreams-list"></div>
+      <div class="upstream-actions">
+        <button class="btn-secondary" type="button" onclick="addGatewayUpstream()">添加上游</button>
+      </div>
+      <div style="margin-top:12px;font-size:11px;color:var(--text-light);line-height:1.6;">
+        密钥只保存环境变量名；填写真实 key 后，点“应用并保存密钥到 .env”才会写入 .env，并临时热更新到 Gateway。
+      </div>
+    </div>
+
+    <div class="config-section">
       <h3>Persona State</h3>
       <div class="config-row">
         <label>启用</label>
@@ -2929,6 +3018,7 @@ let dashboardAiAuthor = 'Haven';
 let reflectionSelectedDate = formatLocalDate(new Date());
 let reflectionCurrentMonth = monthStart(new Date());
 let configSnapshot = null;
+let gatewayUpstreams = [];
 
 function authUrl(path) {
   return path.startsWith('http') ? path : BASE + path;
@@ -5341,6 +5431,10 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function escAttr(s) {
+  return esc(s).replace(/"/g, '&quot;');
+}
+
 function clipUiText(value, maxChars) {
   var text = String(value || '').trim();
   var limit = Math.max(20, Number(maxChars || 240));
@@ -5959,12 +6053,231 @@ document.getElementById('breath-query').addEventListener('keydown', function(e) 
   if (e.key === 'Enter') runBreathDebug();
 });
 
+function normalizeGatewayModelEntry(item) {
+  if (item && typeof item === 'object') {
+    return {
+      id: String(item.id || item.alias || item.name || item.model || item.upstream_model || '').trim(),
+      upstream_model: String(item.upstream_model || item.provider_model || item.target_model || item.model || '').trim(),
+    };
+  }
+  return { id: String(item || '').trim(), upstream_model: '' };
+}
+
+function normalizeGatewayUpstream(raw) {
+  raw = raw || {};
+  var models = Array.isArray(raw.models) ? raw.models.map(normalizeGatewayModelEntry) : [];
+  return {
+    name: String(raw.name || '').trim(),
+    protocol: String(raw.protocol || 'openai').trim() || 'openai',
+    base_url: String(raw.base_url || '').trim(),
+    api_key_envs: Array.isArray(raw.api_key_envs) ? raw.api_key_envs.map(String).filter(Boolean) : [],
+    api_key_values: [],
+    has_direct_api_key: !!raw.has_direct_api_key,
+    key_count: raw.key_count || 0,
+    ready: !!raw.ready,
+    default_model: String(raw.default_model || '').trim(),
+    prompt_cache: String(raw.prompt_cache || '').trim(),
+    prompt_cache_retention: String(raw.prompt_cache_retention || '').trim(),
+    anthropic_version: String(raw.anthropic_version || '').trim(),
+    anthropic_beta: String(raw.anthropic_beta || '').trim(),
+    models: models,
+  };
+}
+
+function splitEnvLines(value) {
+  return String(value || '')
+    .split(/[\n,]+/)
+    .map(function(item) { return item.trim(); })
+    .filter(Boolean);
+}
+
+function splitSecretLines(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map(function(item) { return item.trim(); })
+    .filter(Boolean);
+}
+
+function syncGatewayUpstreamsFromDom() {
+  var list = document.getElementById('cfg-upstreams-list');
+  if (!list) return;
+  gatewayUpstreams = gatewayUpstreams.map(function(existing, index) {
+    var current = normalizeGatewayUpstream(existing);
+    function value(id) {
+      var el = document.getElementById(id);
+      return el ? el.value : '';
+    }
+    current.name = value('cfg-upstream-name-' + index).trim();
+    current.protocol = value('cfg-upstream-protocol-' + index) || 'openai';
+    current.base_url = value('cfg-upstream-url-' + index).trim();
+    current.api_key_envs = splitEnvLines(value('cfg-upstream-envs-' + index));
+    current.api_key_values = splitSecretLines(value('cfg-upstream-key-values-' + index));
+    current.default_model = value('cfg-upstream-default-' + index).trim();
+    current.prompt_cache = value('cfg-upstream-cache-' + index).trim();
+    current.prompt_cache_retention = value('cfg-upstream-cache-retention-' + index).trim();
+    current.anthropic_version = value('cfg-upstream-anthropic-version-' + index).trim();
+    current.anthropic_beta = value('cfg-upstream-anthropic-beta-' + index).trim();
+    current.models = Array.prototype.slice.call(
+      list.querySelectorAll('.upstream-model-row[data-provider-index="' + index + '"]')
+    ).map(function(row, modelIndex) {
+      return {
+        id: value('cfg-upstream-model-id-' + index + '-' + modelIndex).trim(),
+        upstream_model: value('cfg-upstream-model-target-' + index + '-' + modelIndex).trim(),
+      };
+    });
+    return current;
+  });
+}
+
+function renderGatewayUpstreams() {
+  var list = document.getElementById('cfg-upstreams-list');
+  if (!list) return;
+  if (!gatewayUpstreams.length) {
+    list.innerHTML = '<div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-bottom:12px;">还没有配置多上游。未配置时 Gateway 继续使用旧的 upstream_base_url / upstream_models。</div>';
+    return;
+  }
+  list.innerHTML = gatewayUpstreams.map(function(upstream, index) {
+    upstream = normalizeGatewayUpstream(upstream);
+    var envText = upstream.api_key_envs.join('\n');
+    var modelRows = (upstream.models.length ? upstream.models : [{ id: '', upstream_model: '' }]).map(function(model, modelIndex) {
+      model = normalizeGatewayModelEntry(model);
+      return '' +
+        '<div class="upstream-model-row" data-provider-index="' + index + '">' +
+          '<input type="text" id="cfg-upstream-model-id-' + index + '-' + modelIndex + '" placeholder="客户端模型名 / alias" value="' + escAttr(model.id) + '" />' +
+          '<input type="text" id="cfg-upstream-model-target-' + index + '-' + modelIndex + '" placeholder="上游真实模型名，留空同 alias" value="' + escAttr(model.upstream_model) + '" />' +
+          '<button class="btn-secondary upstream-mini-btn" type="button" onclick="removeGatewayModel(' + index + ',' + modelIndex + ')">删除</button>' +
+        '</div>';
+    }).join('');
+    var statusLabel = upstream.ready ? 'ready' : 'not ready';
+    var keyLabel = upstream.key_count ? upstream.key_count + ' key' : (upstream.has_direct_api_key ? 'hidden key' : 'no key');
+    return '' +
+      '<div class="upstream-card">' +
+        '<div class="upstream-card-header">' +
+          '<div class="upstream-card-title">Provider ' + (index + 1) + '</div>' +
+          '<div class="upstream-status"><span class="upstream-dot ' + (upstream.ready ? 'ready' : '') + '"></span><span>' + esc(statusLabel) + '</span><span>' + esc(keyLabel) + '</span></div>' +
+        '</div>' +
+        '<div class="config-row"><label>Name</label><input type="text" id="cfg-upstream-name-' + index + '" placeholder="cw" value="' + escAttr(upstream.name) + '" /></div>' +
+        '<div class="config-row"><label>Protocol</label><select id="cfg-upstream-protocol-' + index + '"><option value="openai"' + (upstream.protocol === 'openai' ? ' selected' : '') + '>openai</option><option value="anthropic"' + (upstream.protocol === 'anthropic' ? ' selected' : '') + '>anthropic</option></select></div>' +
+        '<div class="config-row"><label>Base URL</label><input type="text" id="cfg-upstream-url-' + index + '" placeholder="https://.../v1" value="' + escAttr(upstream.base_url) + '" /></div>' +
+        '<div class="config-row"><label>Key envs</label><textarea id="cfg-upstream-envs-' + index + '" placeholder="OMBRE_GATEWAY_PROVIDER_API_KEY_1&#10;OMBRE_GATEWAY_PROVIDER_API_KEY_2">' + esc(envText) + '</textarea></div>' +
+        '<div class="upstream-note">一行一个环境变量名。多 key 会按现有 Gateway 逻辑在可重试错误时切到下一个。</div>' +
+        '<div class="config-row"><label>Key values</label><textarea id="cfg-upstream-key-values-' + index + '" placeholder="可选：一行一个真实 key，对应上面的 env 名"></textarea></div>' +
+        '<div class="upstream-note">留空不改。只有点“应用并保存密钥到 .env”才会写入，并用于本次热更新。</div>' +
+        '<div class="config-row"><label>Default</label><input type="text" id="cfg-upstream-default-' + index + '" placeholder="默认模型，可留空" value="' + escAttr(upstream.default_model) + '" /></div>' +
+        '<div class="config-row"><label>Cache</label><select id="cfg-upstream-cache-' + index + '"><option value=""' + (!upstream.prompt_cache ? ' selected' : '') + '>none</option><option value="openai"' + (upstream.prompt_cache === 'openai' ? ' selected' : '') + '>openai</option><option value="anthropic"' + (upstream.prompt_cache === 'anthropic' ? ' selected' : '') + '>anthropic</option><option value="anthropic_explicit"' + (upstream.prompt_cache === 'anthropic_explicit' ? ' selected' : '') + '>anthropic_explicit</option></select></div>' +
+        '<div class="config-row"><label>Cache TTL</label><input type="text" id="cfg-upstream-cache-retention-' + index + '" placeholder="24h / 1h，可留空" value="' + escAttr(upstream.prompt_cache_retention) + '" /></div>' +
+        '<div class="config-row"><label>Anthropic ver.</label><input type="text" id="cfg-upstream-anthropic-version-' + index + '" placeholder="2023-06-01" value="' + escAttr(upstream.anthropic_version) + '" /></div>' +
+        '<div class="config-row"><label>Anthropic beta</label><input type="text" id="cfg-upstream-anthropic-beta-' + index + '" placeholder="可留空" value="' + escAttr(upstream.anthropic_beta) + '" /></div>' +
+        '<div style="font-size:12px;color:var(--text-dim);font-weight:600;margin:14px 0 8px;">Models</div>' +
+        modelRows +
+        '<div class="upstream-actions">' +
+          '<button class="btn-secondary upstream-mini-btn" type="button" onclick="addGatewayModel(' + index + ')">添加模型</button>' +
+          '<button class="btn-secondary upstream-mini-btn" type="button" onclick="removeGatewayUpstream(' + index + ')">删除上游</button>' +
+        '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function addGatewayUpstream() {
+  syncGatewayUpstreamsFromDom();
+  gatewayUpstreams.push(normalizeGatewayUpstream({
+    name: '',
+    protocol: 'openai',
+    base_url: '',
+    api_key_envs: [],
+    models: [{ id: '', upstream_model: '' }],
+  }));
+  renderGatewayUpstreams();
+}
+
+function removeGatewayUpstream(index) {
+  syncGatewayUpstreamsFromDom();
+  gatewayUpstreams.splice(index, 1);
+  renderGatewayUpstreams();
+}
+
+function addGatewayModel(index) {
+  syncGatewayUpstreamsFromDom();
+  if (!gatewayUpstreams[index]) return;
+  gatewayUpstreams[index].models = gatewayUpstreams[index].models || [];
+  gatewayUpstreams[index].models.push({ id: '', upstream_model: '' });
+  renderGatewayUpstreams();
+}
+
+function removeGatewayModel(index, modelIndex) {
+  syncGatewayUpstreamsFromDom();
+  if (!gatewayUpstreams[index] || !gatewayUpstreams[index].models) return;
+  gatewayUpstreams[index].models.splice(modelIndex, 1);
+  renderGatewayUpstreams();
+}
+
+function collectGatewayUpstreams(includeKeyValues) {
+  syncGatewayUpstreamsFromDom();
+  var names = {};
+  return gatewayUpstreams.map(function(upstream) {
+    upstream = normalizeGatewayUpstream(upstream);
+    if (!upstream.name) throw new Error('上游 name 不能为空');
+    if (names[upstream.name]) throw new Error('上游 name 重复: ' + upstream.name);
+    names[upstream.name] = true;
+    if (!upstream.base_url) throw new Error('上游 ' + upstream.name + ' 的 Base URL 不能为空');
+    upstream.api_key_envs.forEach(function(envName) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envName)) {
+        throw new Error('环境变量名不合法: ' + envName);
+      }
+    });
+    if (upstream.api_key_values.length && !includeKeyValues) {
+      throw new Error('填写了真实 key 时，请使用“应用并保存密钥到 .env”');
+    }
+    if (upstream.api_key_values.length > upstream.api_key_envs.length) {
+      throw new Error('上游 ' + upstream.name + ' 的 key 数量多于 env 名数量');
+    }
+    var models = upstream.models
+      .map(normalizeGatewayModelEntry)
+      .filter(function(model) { return model.id; })
+      .map(function(model) {
+        if (model.upstream_model && model.upstream_model !== model.id) {
+          return { id: model.id, upstream_model: model.upstream_model };
+        }
+        return model.id;
+      });
+    if (!models.length && !upstream.default_model) {
+      throw new Error('上游 ' + upstream.name + ' 至少需要一个模型或 default model');
+    }
+    var result = {
+      name: upstream.name,
+      protocol: upstream.protocol,
+      base_url: upstream.base_url,
+      api_key_envs: upstream.api_key_envs,
+      default_model: upstream.default_model,
+      prompt_cache: upstream.prompt_cache,
+      prompt_cache_retention: upstream.prompt_cache_retention,
+      anthropic_version: upstream.anthropic_version,
+      anthropic_beta: upstream.anthropic_beta,
+      models: models,
+    };
+    if (includeKeyValues && upstream.api_key_values.length) {
+      result.api_key_values = upstream.api_key_values;
+    }
+    return result;
+  });
+}
+
+function collectGatewayUpstreamsForSave(includeKeyValues) {
+  try {
+    return { upstreams: collectGatewayUpstreams(includeKeyValues), error: '' };
+  } catch (e) {
+    return { upstreams: [], error: e.message };
+  }
+}
+
 async function loadConfig() {
   try {
     var res = await authFetch(BASE + '/api/config');
     if (!res) return;
     var cfg = await res.json();
     configSnapshot = JSON.parse(JSON.stringify(cfg || {}));
+    gatewayUpstreams = (((cfg.gateway || {}).upstreams) || []).map(normalizeGatewayUpstream);
+    renderGatewayUpstreams();
     document.getElementById('cfg-dehy-model').value = cfg.dehydration.model || '';
     document.getElementById('cfg-dehy-url').value = cfg.dehydration.base_url || '';
     document.getElementById('cfg-dehy-key').placeholder = '当前: ' + (cfg.dehydration.api_key_masked || '未设置');
@@ -6082,9 +6395,16 @@ async function loadConfig() {
     document.getElementById('cfg-self-anchor-entry').value =
       (cfg.self_anchor && cfg.self_anchor.entry_bucket_id) || '';
     document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 90;
+    var upstreamCount = gatewayUpstreams.length;
+    var upstreamModelCount = gatewayUpstreams.reduce(function(total, upstream) {
+      return total + ((upstream.models || []).filter(function(model) {
+        return normalizeGatewayModelEntry(model).id;
+      }).length);
+    }, 0);
     document.getElementById('config-readonly').innerHTML =
       'Transport: <strong>' + esc(cfg.transport) + '</strong><br>' +
       'Buckets dir: <strong>' + esc(cfg.buckets_dir) + '</strong><br>' +
+      'Gateway upstreams: <strong>' + upstreamCount + ' providers / ' + upstreamModelCount + ' models</strong><br>' +
       'Persona API: <strong>' + ((cfg.persona && cfg.persona.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
       '日印象 API: <strong>' + ((cfg.reflection && cfg.reflection.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
       'Portrait API: <strong>' + ((cfg.portrait && cfg.portrait.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
@@ -6208,6 +6528,15 @@ async function saveConfig(persist, persistEnv) {
     candidate.self_anchor = {
       entry_bucket_id: document.getElementById('cfg-self-anchor-entry').value.trim(),
     };
+    var upstreamsResult = collectGatewayUpstreamsForSave(!!persistEnv);
+    if (upstreamsResult.error) {
+      setConfigStatus('<span style="color:var(--negative)">✗ ' + esc(upstreamsResult.error) + '</span>');
+      return;
+    }
+    var originalUpstreams = ((configSnapshot.gateway || {}).upstreams) || [];
+    if (upstreamsResult.upstreams.length || originalUpstreams.length) {
+      candidate.gateway = { upstreams: upstreamsResult.upstreams };
+    }
   }
   if (activeTarget === 'memory-config') {
     candidate.gateway = {

@@ -331,13 +331,7 @@ class GatewayService:
             self.upstream_default_model,
         )
         self.upstreams = self._load_upstreams()
-        self.upstream_models = self._aggregate_upstream_models()
-        if not self.upstream_default_model:
-            for upstream in self.upstreams:
-                default_model = upstream.get("default_model") or ""
-                if default_model:
-                    self.upstream_default_model = default_model
-                    break
+        self._refresh_upstream_model_summary()
 
         self.head_recent_hours = int(self.gateway_cfg.get("head_recent_hours", 72))
         self.recent_context_reentry_idle_hours = float(
@@ -670,6 +664,7 @@ class GatewayService:
             "memory_detail_recall_enabled": self.memory_detail_recall_enabled,
             "memory_detail_recall_max_ids": self.memory_detail_recall_max_ids,
             "memory_detail_recall_budget": self.memory_detail_recall_budget,
+            "upstreams": self._gateway_upstreams_config_payload(),
         }
 
     def _memory_diffusion_config_payload(self) -> dict[str, Any]:
@@ -720,8 +715,196 @@ class GatewayService:
             "retain_after_inject": self.dream_retain_after_inject,
         }
 
+    def _upstream_env_names_from_raw(self, raw: dict[str, Any]) -> list[str]:
+        env_names: list[str] = []
+
+        def add(value: Any) -> None:
+            env_name = str(value or "").strip()
+            if env_name and env_name not in env_names:
+                env_names.append(env_name)
+
+        add(raw.get("api_key_env"))
+        raw_envs = raw.get("api_key_envs", [])
+        if isinstance(raw_envs, str):
+            raw_envs = [item.strip() for item in raw_envs.split(",")]
+        if isinstance(raw_envs, list):
+            for env_name in raw_envs:
+                add(env_name)
+        return env_names
+
+    def _safe_upstream_models_payload(self, upstream: dict[str, Any]) -> list[Any]:
+        models: list[Any] = []
+        model_map = upstream.get("model_map", {}) if isinstance(upstream.get("model_map"), dict) else {}
+        for model in upstream.get("models", []) or []:
+            public_model = str(model or "").strip()
+            if not public_model:
+                continue
+            upstream_model = str(model_map.get(public_model) or public_model).strip()
+            if upstream_model and upstream_model != public_model:
+                models.append({"id": public_model, "upstream_model": upstream_model})
+            else:
+                models.append(public_model)
+        return models
+
+    def _gateway_upstreams_config_payload(self) -> list[dict[str, Any]]:
+        raw_upstreams = self.gateway_cfg.get("upstreams", [])
+        if not isinstance(raw_upstreams, list):
+            raw_upstreams = []
+        raw_by_name = {
+            str(item.get("name") or "").strip(): item
+            for item in raw_upstreams
+            if isinstance(item, dict)
+        }
+        payload: list[dict[str, Any]] = []
+        for upstream in self.upstreams:
+            name = str(upstream.get("name") or "").strip()
+            raw = raw_by_name.get(name, {}) if name else {}
+            env_names = self._upstream_env_names_from_raw(raw)
+            direct_key_count = 0
+            if raw.get("api_key"):
+                direct_key_count += 1
+            raw_api_keys = raw.get("api_keys", [])
+            if isinstance(raw_api_keys, str):
+                direct_key_count += len([item for item in raw_api_keys.split(",") if item.strip()])
+            elif isinstance(raw_api_keys, list):
+                direct_key_count += len([item for item in raw_api_keys if item])
+            payload.append(
+                {
+                    "name": name,
+                    "protocol": upstream.get("protocol", "openai"),
+                    "base_url": upstream.get("base_url", ""),
+                    "api_key_envs": env_names,
+                    "has_direct_api_key": direct_key_count > 0,
+                    "key_count": len(upstream.get("api_keys", [])),
+                    "ready": bool(upstream.get("base_url") and upstream.get("api_keys")),
+                    "default_model": upstream.get("default_model", ""),
+                    "prompt_cache": upstream.get("prompt_cache", ""),
+                    "prompt_cache_retention": upstream.get("prompt_cache_retention", ""),
+                    "anthropic_version": upstream.get("anthropic_version", ""),
+                    "anthropic_beta": upstream.get("anthropic_beta", ""),
+                    "models": self._safe_upstream_models_payload(upstream),
+                }
+            )
+        return payload
+
+    def _sanitize_env_names(self, raw_value: Any) -> list[str]:
+        if isinstance(raw_value, str):
+            candidates = re.split(r"[\n,]+", raw_value)
+        elif isinstance(raw_value, list):
+            candidates = raw_value
+        else:
+            candidates = []
+        env_names: list[str] = []
+        for candidate in candidates:
+            env_name = str(candidate or "").strip()
+            if not env_name or env_name in env_names:
+                continue
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+                raise ValueError(f'invalid api key env name "{env_name}"')
+            env_names.append(env_name)
+        return env_names
+
+    def _sanitize_upstream_model_entries(self, raw_models: Any) -> list[Any]:
+        if isinstance(raw_models, str):
+            raw_items: list[Any] = [item.strip() for item in raw_models.split(",")]
+        elif isinstance(raw_models, list):
+            raw_items = raw_models
+        else:
+            raw_items = []
+        models: list[Any] = []
+        seen: set[str] = set()
+        for raw_model in raw_items:
+            if isinstance(raw_model, dict):
+                public_model = str(
+                    raw_model.get("id")
+                    or raw_model.get("alias")
+                    or raw_model.get("name")
+                    or raw_model.get("model")
+                    or raw_model.get("upstream_model")
+                    or ""
+                ).strip()
+                upstream_model = str(
+                    raw_model.get("upstream_model")
+                    or raw_model.get("provider_model")
+                    or raw_model.get("target_model")
+                    or raw_model.get("model")
+                    or public_model
+                    or ""
+                ).strip()
+            else:
+                public_model = str(raw_model or "").strip()
+                upstream_model = public_model
+            if not public_model or public_model in seen:
+                continue
+            seen.add(public_model)
+            if upstream_model and upstream_model != public_model:
+                models.append({"id": public_model, "upstream_model": upstream_model})
+            else:
+                models.append(public_model)
+        return models
+
+    def _sanitize_gateway_upstreams_config(self, raw_upstreams: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw_upstreams, list):
+            raise ValueError("gateway.upstreams must be a list")
+        existing_by_name = {
+            str(item.get("name") or "").strip(): item
+            for item in self.gateway_cfg.get("upstreams", [])
+            if isinstance(item, dict)
+        }
+        upstreams: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for index, raw in enumerate(raw_upstreams, start=1):
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or f"upstream-{index}").strip() or f"upstream-{index}"
+            if name in seen_names:
+                raise ValueError(f'duplicate gateway upstream name "{name}"')
+            seen_names.add(name)
+            sanitized: dict[str, Any] = {
+                "name": name,
+                "protocol": self._normalize_upstream_protocol(
+                    raw.get("protocol") or raw.get("api_format") or raw.get("type")
+                ),
+                "base_url": str(raw.get("base_url") or "").strip().rstrip("/"),
+            }
+            env_names = self._sanitize_env_names(raw.get("api_key_envs", raw.get("api_key_env", [])))
+            if env_names:
+                sanitized["api_key_envs"] = env_names
+            for key in (
+                "default_model",
+                "prompt_cache",
+                "prompt_cache_retention",
+                "anthropic_version",
+                "anthropic_beta",
+            ):
+                value = str(raw.get(key) or "").strip()
+                if value:
+                    sanitized[key] = value
+            models = self._sanitize_upstream_model_entries(raw.get("models", []))
+            if models:
+                sanitized["models"] = models
+
+            existing = existing_by_name.get(name, {})
+            for secret_key in ("api_key", "api_keys"):
+                if secret_key in raw:
+                    sanitized[secret_key] = raw[secret_key]
+                elif isinstance(existing, dict) and secret_key in existing:
+                    sanitized[secret_key] = existing[secret_key]
+            upstreams.append(sanitized)
+        return upstreams
+
+    def _apply_gateway_upstreams_config(self, raw_upstreams: Any) -> list[str]:
+        upstreams = self._sanitize_gateway_upstreams_config(raw_upstreams)
+        self.gateway_cfg["upstreams"] = upstreams
+        self.upstreams = self._load_upstreams()
+        self._refresh_upstream_model_summary()
+        self.upstream_key_cooldowns.clear()
+        return ["gateway.upstreams"]
+
     def _apply_gateway_memory_config(self, payload: dict[str, Any]) -> list[str]:
         updated: list[str] = []
+        if "upstreams" in payload:
+            updated.extend(self._apply_gateway_upstreams_config(payload["upstreams"]))
         if "cooldown_hours" in payload:
             self.cooldown_hours = max(0.0, float(payload["cooldown_hours"]))
             self.gateway_cfg["cooldown_hours"] = self.cooldown_hours
@@ -11641,6 +11824,19 @@ class GatewayService:
                 models.append(model)
         return models
 
+    def _refresh_upstream_model_summary(self) -> None:
+        self.upstream_models = self._aggregate_upstream_models()
+        configured_default = str(self.gateway_cfg.get("upstream_default_model") or "").strip()
+        if configured_default and configured_default in self.upstream_models:
+            self.upstream_default_model = configured_default
+            return
+        for upstream in self.upstreams:
+            default_model = str(upstream.get("default_model") or "").strip()
+            if default_model:
+                self.upstream_default_model = default_model
+                return
+        self.upstream_default_model = self.upstream_models[0] if self.upstream_models else configured_default
+
     def _resolve_upstream_for_model(self, model: str) -> dict[str, Any]:
         if not self.upstreams:
             raise RuntimeError("gateway upstream is not configured")
@@ -11649,7 +11845,12 @@ class GatewayService:
         if len(self.upstreams) == 1:
             upstream = self.upstreams[0]
             if not normalized_model:
-                normalized_model = str(upstream.get("default_model") or self.upstream_default_model).strip()
+                upstream_models = upstream.get("models", []) or []
+                normalized_model = str(
+                    upstream.get("default_model")
+                    or (upstream_models[0] if upstream_models else "")
+                    or self.upstream_default_model
+                ).strip()
             model_map = upstream.get("model_map", {})
             upstream_model = model_map.get(normalized_model, normalized_model)
         else:

@@ -465,6 +465,23 @@ def test_dashboard_exposes_persona_config_and_env_persist_button():
     assert "body.persona.api_key = personaKeyVal;" in html
 
 
+def test_dashboard_exposes_gateway_upstream_editor():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+    load_block = html.split("async function loadConfig()", 1)[1].split("async function saveConfig", 1)[0]
+    save_block = html.split("async function saveConfig", 1)[1].split("var keyVal =", 1)[0]
+
+    assert "<h3>Gateway 上游模型</h3>" in html
+    assert 'id="cfg-upstreams-list"' in html
+    assert "function renderGatewayUpstreams()" in html
+    assert "function collectGatewayUpstreams(includeKeyValues)" in html
+    assert "function collectGatewayUpstreamsForSave(includeKeyValues)" in html
+    assert "gatewayUpstreams = (((cfg.gateway || {}).upstreams) || []).map(normalizeGatewayUpstream);" in load_block
+    assert "var upstreamsResult = collectGatewayUpstreamsForSave(!!persistEnv);" in save_block
+    assert "candidate.gateway = { upstreams: upstreamsResult.upstreams };" in save_block
+    assert "api_key_values" in html
+    assert "填写了真实 key 时，请使用“应用并保存密钥到 .env”" in html
+
+
 def test_dashboard_dream_controls_load_and_save_runtime_fields():
     html = Path("dashboard.html").read_text(encoding="utf-8")
     load_block = html.split("async function loadConfig()", 1)[1].split("async function saveConfig", 1)[0]

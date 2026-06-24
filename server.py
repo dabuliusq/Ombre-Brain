@@ -242,6 +242,223 @@ def _write_dashboard_env_values(updates: dict[str, str]) -> list[str]:
     return [f"env.{key}" for key in updates]
 
 
+def _dashboard_split_names(value) -> list[str]:
+    if isinstance(value, str):
+        candidates = re.split(r"[\n,]+", value)
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        candidates = []
+    names = []
+    for candidate in candidates:
+        name = str(candidate or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _dashboard_api_key_values(value) -> list[str]:
+    if isinstance(value, list):
+        candidates = value
+    elif isinstance(value, str):
+        candidates = value.splitlines()
+    else:
+        candidates = []
+    return [str(candidate or "").strip() for candidate in candidates if str(candidate or "").strip()]
+
+
+def _dashboard_sanitize_env_names(value) -> list[str]:
+    env_names = []
+    for env_name in _dashboard_split_names(value):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+            raise ValueError(f'invalid api key env name "{env_name}"')
+        env_names.append(env_name)
+    return env_names
+
+
+def _dashboard_sanitize_upstream_models(raw_models) -> list:
+    if isinstance(raw_models, str):
+        raw_items = [item.strip() for item in raw_models.split(",")]
+    elif isinstance(raw_models, list):
+        raw_items = raw_models
+    else:
+        raw_items = []
+    models = []
+    seen = set()
+    for raw_model in raw_items:
+        if isinstance(raw_model, dict):
+            public_model = str(
+                raw_model.get("id")
+                or raw_model.get("alias")
+                or raw_model.get("name")
+                or raw_model.get("model")
+                or raw_model.get("upstream_model")
+                or ""
+            ).strip()
+            upstream_model = str(
+                raw_model.get("upstream_model")
+                or raw_model.get("provider_model")
+                or raw_model.get("target_model")
+                or raw_model.get("model")
+                or public_model
+                or ""
+            ).strip()
+        else:
+            public_model = str(raw_model or "").strip()
+            upstream_model = public_model
+        if not public_model or public_model in seen:
+            continue
+        seen.add(public_model)
+        if upstream_model and upstream_model != public_model:
+            models.append({"id": public_model, "upstream_model": upstream_model})
+        else:
+            models.append(public_model)
+    return models
+
+
+def _dashboard_normalize_upstream_protocol(value) -> str:
+    protocol = str(value or "openai").strip().lower()
+    if protocol in {"anthropic", "claude"}:
+        return "anthropic"
+    return "openai"
+
+
+def _dashboard_sanitize_gateway_upstreams(raw_upstreams, existing_upstreams=None) -> list[dict]:
+    if not isinstance(raw_upstreams, list):
+        raise ValueError("gateway.upstreams must be a list")
+    existing_by_name = {
+        str(item.get("name") or "").strip(): item
+        for item in (existing_upstreams or [])
+        if isinstance(item, dict)
+    }
+    upstreams = []
+    seen_names = set()
+    for index, raw in enumerate(raw_upstreams, start=1):
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or f"upstream-{index}").strip() or f"upstream-{index}"
+        if name in seen_names:
+            raise ValueError(f'duplicate gateway upstream name "{name}"')
+        seen_names.add(name)
+        sanitized = {
+            "name": name,
+            "protocol": _dashboard_normalize_upstream_protocol(
+                raw.get("protocol") or raw.get("api_format") or raw.get("type")
+            ),
+            "base_url": str(raw.get("base_url") or "").strip().rstrip("/"),
+        }
+        env_names = _dashboard_sanitize_env_names(raw.get("api_key_envs", raw.get("api_key_env", [])))
+        if env_names:
+            sanitized["api_key_envs"] = env_names
+        for key in (
+            "default_model",
+            "prompt_cache",
+            "prompt_cache_retention",
+            "anthropic_version",
+            "anthropic_beta",
+        ):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                sanitized[key] = value
+        models = _dashboard_sanitize_upstream_models(raw.get("models", []))
+        if models:
+            sanitized["models"] = models
+
+        existing = existing_by_name.get(name, {})
+        for secret_key in ("api_key", "api_keys"):
+            if isinstance(existing, dict) and secret_key in existing:
+                sanitized[secret_key] = existing[secret_key]
+        upstreams.append(sanitized)
+    return upstreams
+
+
+def _dashboard_gateway_upstream_env_updates(raw_upstreams) -> dict[str, str]:
+    updates = {}
+    for raw in raw_upstreams or []:
+        if not isinstance(raw, dict):
+            continue
+        env_names = _dashboard_sanitize_env_names(raw.get("api_key_envs", raw.get("api_key_env", [])))
+        key_values = _dashboard_api_key_values(raw.get("api_key_values", []))
+        if key_values and len(key_values) > len(env_names):
+            name = str(raw.get("name") or "upstream").strip()
+            raise ValueError(f'gateway upstream "{name}" has api key values without matching env names')
+        for index, key_value in enumerate(key_values):
+            updates[env_names[index]] = key_value
+    return updates
+
+
+def _dashboard_gateway_upstreams_have_key_values(raw_upstreams) -> bool:
+    return any(
+        isinstance(raw, dict) and bool(_dashboard_api_key_values(raw.get("api_key_values", [])))
+        for raw in raw_upstreams or []
+    )
+
+
+def _dashboard_gateway_hot_upstreams(config_upstreams: list[dict], raw_upstreams, env_updates: dict[str, str]) -> list[dict]:
+    key_values_by_name = {}
+    for raw in raw_upstreams or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            continue
+        env_names = _dashboard_sanitize_env_names(raw.get("api_key_envs", raw.get("api_key_env", [])))
+        values = _dashboard_api_key_values(raw.get("api_key_values", []))
+        hot_keys = []
+        for index, value in enumerate(values):
+            if index < len(env_names):
+                env_name = env_names[index]
+                if env_updates.get(env_name):
+                    hot_keys.append({"api_key": value, "label": f"env:{env_name}"})
+        if hot_keys:
+            key_values_by_name[name] = hot_keys
+
+    hot_upstreams = []
+    for upstream in config_upstreams:
+        hot = dict(upstream)
+        name = str(hot.get("name") or "").strip()
+        if name in key_values_by_name:
+            hot["api_keys"] = key_values_by_name[name]
+        hot_upstreams.append(hot)
+    return hot_upstreams
+
+
+def _dashboard_gateway_upstreams_payload(gateway_cfg: dict) -> list[dict]:
+    raw_upstreams = gateway_cfg.get("upstreams", [])
+    if not isinstance(raw_upstreams, list):
+        return []
+    payload = []
+    for raw in raw_upstreams:
+        if not isinstance(raw, dict):
+            continue
+        env_names = _dashboard_split_names(raw.get("api_key_envs", raw.get("api_key_env", [])))
+        direct_key_count = 1 if raw.get("api_key") else 0
+        raw_api_keys = raw.get("api_keys", [])
+        if isinstance(raw_api_keys, str):
+            direct_key_count += len([item for item in raw_api_keys.split(",") if item.strip()])
+        elif isinstance(raw_api_keys, list):
+            direct_key_count += len([item for item in raw_api_keys if item])
+        env_key_count = len([env_name for env_name in env_names if os.environ.get(env_name, "")])
+        payload.append(
+            {
+                "name": str(raw.get("name") or "").strip(),
+                "protocol": _dashboard_normalize_upstream_protocol(raw.get("protocol")),
+                "base_url": str(raw.get("base_url") or "").strip(),
+                "api_key_envs": env_names,
+                "has_direct_api_key": direct_key_count > 0,
+                "key_count": direct_key_count + env_key_count,
+                "ready": bool(str(raw.get("base_url") or "").strip() and (direct_key_count or env_key_count)),
+                "default_model": str(raw.get("default_model") or "").strip(),
+                "prompt_cache": str(raw.get("prompt_cache") or "").strip(),
+                "prompt_cache_retention": str(raw.get("prompt_cache_retention") or "").strip(),
+                "anthropic_version": str(raw.get("anthropic_version") or "").strip(),
+                "anthropic_beta": str(raw.get("anthropic_beta") or "").strip(),
+                "models": _dashboard_sanitize_upstream_models(raw.get("models", [])),
+            }
+        )
+    return payload
+
+
 async def _hot_update_gateway_config(gateway_payload: dict) -> str | None:
     if not gateway_payload:
         return None
@@ -9725,6 +9942,7 @@ async def api_config_get(request):
             "memory_detail_recall_enabled": _bool_value(gateway_cfg.get("memory_detail_recall_enabled"), False),
             "memory_detail_recall_max_ids": gateway_cfg.get("memory_detail_recall_max_ids", 3),
             "memory_detail_recall_budget": gateway_cfg.get("memory_detail_recall_budget", 1200),
+            "upstreams": _dashboard_gateway_upstreams_payload(gateway_cfg),
         },
         "recall": {
             "query_resurface_enabled": _bool_value(recall_cfg.get("query_resurface_enabled"), False),
@@ -10027,6 +10245,29 @@ async def api_config_update(request):
         g = body["gateway"]
         gateway_cfg = config.setdefault("gateway", {})
         gateway_hot_update_body = {}
+        if "upstreams" in g:
+            try:
+                sanitized_upstreams = _dashboard_sanitize_gateway_upstreams(
+                    g["upstreams"],
+                    gateway_cfg.get("upstreams", []),
+                )
+                if body.get("persist_env", False):
+                    gateway_env_updates = _dashboard_gateway_upstream_env_updates(g["upstreams"])
+                    env_updates.update(gateway_env_updates)
+                elif _dashboard_gateway_upstreams_have_key_values(g["upstreams"]):
+                    return JSONResponse(
+                        {"error": "gateway upstream api_key_values require persist_env=true"},
+                        status_code=400,
+                    )
+            except ValueError as e:
+                return JSONResponse({"error": str(e)}, status_code=400)
+            gateway_cfg["upstreams"] = sanitized_upstreams
+            gateway_hot_update_body["upstreams"] = _dashboard_gateway_hot_upstreams(
+                sanitized_upstreams,
+                g["upstreams"],
+                env_updates,
+            )
+            updated.append("gateway.upstreams")
         if "cooldown_hours" in g:
             gateway_cfg["cooldown_hours"] = max(0.0, float(g["cooldown_hours"]))
             gateway_hot_update_body["cooldown_hours"] = gateway_cfg["cooldown_hours"]
@@ -10413,6 +10654,11 @@ async def api_config_update(request):
 
             if "gateway" in body:
                 sc_gateway = save_config.setdefault("gateway", {})
+                if "upstreams" in body["gateway"]:
+                    sc_gateway["upstreams"] = _dashboard_sanitize_gateway_upstreams(
+                        body["gateway"]["upstreams"],
+                        sc_gateway.get("upstreams", []),
+                    )
                 if "cooldown_hours" in body["gateway"]:
                     sc_gateway["cooldown_hours"] = max(0.0, float(body["gateway"]["cooldown_hours"]))
                 if "skip_recent_rounds" in body["gateway"]:

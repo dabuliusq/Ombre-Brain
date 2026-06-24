@@ -2372,6 +2372,91 @@ def test_gateway_routes_model_alias_to_same_upstream_model(monkeypatch, test_con
     assert captured[1]["json"]["model"] == "deepseek-v4"
 
 
+def test_gateway_config_endpoint_hot_updates_upstreams_models_and_aliases(monkeypatch, test_config, bucket_mgr):
+    monkeypatch.setenv("OMBRE_GATEWAY_SITE_A_API_KEY", "site-a-secret")
+
+    def upstream_responder(body, request, captured):
+        captured[-1]["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    cfg = _gateway_config(
+        test_config,
+        upstream_base_url="",
+        upstream_models=[],
+        upstream_default_model="old-model",
+    )
+    app, service, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        upstream_responder=upstream_responder,
+    )
+
+    with TestClient(app) as client:
+        update_response = client.post(
+            "/api/config",
+            headers={"Authorization": "Bearer gateway-secret"},
+            json={
+                "gateway": {
+                    "upstreams": [
+                        {
+                            "name": "site-a",
+                            "base_url": "https://site-a.example/v1",
+                            "api_key_envs": ["OMBRE_GATEWAY_SITE_A_API_KEY"],
+                            "models": [
+                                {
+                                    "id": "public/deepseek-v4",
+                                    "upstream_model": "deepseek-v4",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+        models_response = client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+        chat_response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-config-hot-upstreams",
+            },
+            json={
+                "messages": [{"role": "user", "content": "test"}],
+            },
+        )
+
+    assert update_response.status_code == 200
+    assert "gateway.upstreams" in update_response.json()["updated"]
+    assert update_response.json()["gateway"]["upstreams"][0]["api_key_envs"] == [
+        "OMBRE_GATEWAY_SITE_A_API_KEY"
+    ]
+    assert update_response.json()["gateway"]["upstreams"][0]["key_count"] == 1
+    assert service.upstreams[0]["model_map"]["public/deepseek-v4"] == "deepseek-v4"
+    assert models_response.status_code == 200
+    assert [model["id"] for model in models_response.json()["data"]] == ["public/deepseek-v4"]
+    assert chat_response.status_code == 200
+    assert captured[0]["url"] == "https://site-a.example/v1/chat/completions"
+    assert captured[0]["auth"] == "Bearer site-a-secret"
+    assert captured[0]["json"]["model"] == "deepseek-v4"
+
+
 def test_gateway_retries_next_api_key_for_retryable_error(monkeypatch, test_config, bucket_mgr):
     monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setenv("OMBRE_GATEWAY_PROVIDER_KEY_1", "bad-secret")
