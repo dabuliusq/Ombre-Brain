@@ -17,7 +17,7 @@ services:
     volumes:
       - /srv/ombre-brain/buckets:/data
       - /srv/ombre-brain/state:/state
-      - /srv/ombre-brain/config.yaml:/app/config.yaml:ro
+      - /srv/ombre-brain/config.yaml:/app/config.yaml
       - /opt/Ombre-Brain/.env:/app/.env
 
   ombre-gateway:
