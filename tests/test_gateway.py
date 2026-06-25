@@ -9115,6 +9115,61 @@ def test_reliable_moment_hit_promotes_to_direct_seed_when_bucket_seed_misses(
     assert planner_debug["final_bucket_ids"] == [weak_bucket_id]
 
 
+def test_suppressed_semantic_bucket_can_still_feed_moment_seed_promotion(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        inject_max_cards=1,
+        first_card_min_score=0.35,
+        word_map_hint_enabled=False,
+    )
+    target_bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n海边神庙的故事里，女祭司把灯放在岸边。",
+        name="海边神庙的离别故事",
+        hours_ago=12,
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+
+    async def fake_select_dynamic_buckets(query, session_id, buckets, **kwargs):
+        target_bucket = next(bucket for bucket in buckets if bucket["id"] == target_bucket_id)
+        suppressed_item = {
+            "bucket": target_bucket,
+            "semantic_score": 0.41,
+            "keyword_score": 0.0,
+            "score": 0.30,
+            "admission_reason": "low_recall_evidence",
+        }
+        debug = service._query_planner_debug_base(query)
+        debug["final_bucket_ids"] = []
+        return [], [suppressed_item], debug
+
+    monkeypatch.setattr(service, "_select_dynamic_buckets", fake_select_dynamic_buckets)
+    all_moments, grouped_moments, _ = service._refresh_moment_graph(all_buckets)
+    selected, candidates, suppressed, _suppressed_buckets, planner_debug = _run(
+        service._select_dynamic_moments(
+            "水边",
+            "sess-suppressed-semantic-moment-promotion",
+            all_buckets,
+            grouped_moments,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert planner_debug["final_bucket_ids"] == []
+    assert [moment["bucket_id"] for moment in selected] == [target_bucket_id]
+    assert selected[0]["promoted_direct_seed"] is True
+    assert target_bucket_id in {moment["bucket_id"] for moment in candidates}
+    assert not suppressed
+
+
 def test_compound_query_preserves_distinct_anchor_cards(
     monkeypatch, test_config, bucket_mgr
 ):

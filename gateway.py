@@ -7016,7 +7016,21 @@ class GatewayService:
             for bucket in selected_buckets
             if bucket.get("id")
         }
+        candidate_bucket_signals = dict(selected_bucket_signals)
+        for item in suppressed_buckets or []:
+            bucket = item.get("bucket") if isinstance(item, dict) else None
+            bucket_id = str((bucket or {}).get("id") or "")
+            if bucket_id:
+                candidate_bucket_signals.setdefault(bucket_id, self._bucket_candidate_recall_signal(item))
         bucket_boosts = {bucket_id: 1.0 for bucket_id in selected_bucket_ids}
+        for item in suppressed_buckets or []:
+            bucket = item.get("bucket") if isinstance(item, dict) else None
+            bucket_id = str((bucket or {}).get("id") or "")
+            if not bucket_id or bucket_id in bucket_boosts:
+                continue
+            boost = self._suppressed_bucket_moment_search_boost(query, item)
+            if boost > 0:
+                bucket_boosts[bucket_id] = boost
         eligible_buckets = [
             bucket
             for bucket in all_buckets
@@ -7078,7 +7092,7 @@ class GatewayService:
             bucket_id = str(item.get("bucket_id") or "")
             item = self._moment_with_bucket_recall_signal(
                 item,
-                selected_bucket_signals.get(bucket_id),
+                candidate_bucket_signals.get(bucket_id),
             )
             if bucket_id in word_map_hint_bucket_ids:
                 hint_debug = word_map_boost_debug.get(bucket_id) or {}
@@ -7260,7 +7274,10 @@ class GatewayService:
             return False
         if should_suppress_context_candidate(query, moment, self.relevance_options):
             return False
-        return self._moment_has_reliable_diffusion_seed_signal(query, moment)
+        return (
+            self._moment_has_reliable_diffusion_seed_signal(query, moment)
+            or self._unselected_moment_has_reliable_recall_signal(query, moment)
+        )
 
     def _moment_direct_seed_promotion_rank(self, query: str, moment: dict) -> tuple:
         return (
@@ -10375,7 +10392,11 @@ class GatewayService:
 
     def _bucket_with_recall_signal(self, item: dict) -> dict:
         bucket = dict(item.get("bucket") or {})
-        signal = {
+        bucket["_recall_signal"] = self._bucket_candidate_recall_signal(item)
+        return bucket
+
+    def _bucket_candidate_recall_signal(self, item: dict) -> dict:
+        return {
             key: item.get(key)
             for key in (
                 "semantic_score",
@@ -10384,10 +10405,22 @@ class GatewayService:
                 "exact_anchor_match",
                 "admission_reason",
             )
-            if key in item
+            if isinstance(item, dict) and key in item
         }
-        bucket["_recall_signal"] = signal
-        return bucket
+
+    def _suppressed_bucket_moment_search_boost(self, query: str, item: dict) -> float:
+        if not isinstance(item, dict):
+            return 0.0
+        if item.get("planner_lexical_match") or item.get("exact_anchor_match"):
+            return 1.0
+        if str(item.get("admission_reason") or "") == "word_map_topic_evidence_missing":
+            return 0.0
+        if not self._query_has_specific_seed_residue(query):
+            return 0.0
+        semantic_score = self._safe_float(item.get("semantic_score"), 0.0)
+        if semantic_score >= self._unselected_moment_semantic_min_score():
+            return semantic_score
+        return 0.0
 
     async def _rerank_scored_bucket_candidates(self, query: str, scored_candidates: list[dict]) -> list[dict]:
         if not scored_candidates or not getattr(self.reranker_engine, "enabled", False):
@@ -10665,6 +10698,15 @@ class GatewayService:
             max(0.30, self.first_card_min_score * 0.55),
         )
 
+    def _unselected_moment_semantic_min_score(self) -> float:
+        return 0.40
+
+    def _query_has_specific_seed_residue(self, query: str) -> bool:
+        return any(
+            diffusion_seed_topic_term_has_specific_residue(term)
+            for term in self._specific_query_terms(query)
+        )
+
     def _unselected_moment_has_reliable_recall_signal(self, query: str, moment: dict) -> bool:
         if self.recall_policy.has_strong_score(rerank_score=moment.get("rerank_score")):
             return True
@@ -10679,6 +10721,12 @@ class GatewayService:
         score = self._safe_float(moment.get("combined_score", moment.get("score")), 0.0)
         if score < self._unselected_moment_min_score():
             return False
+        if (
+            self._query_has_specific_seed_residue(query)
+            and self._safe_float(moment.get("semantic_score"), 0.0)
+            >= self._unselected_moment_semantic_min_score()
+        ):
+            return True
         return self._moment_has_query_topic_evidence(query, moment)
 
     def _get_keyword_candidates(self, query: str, buckets: list[dict]) -> dict[str, float]:
