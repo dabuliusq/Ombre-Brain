@@ -111,6 +111,7 @@ from memory_layers import (
     moment_runtime_gate_debug,
     normalize_write_classification,
 )
+from memory_metadata import normalize_memory_metadata
 from recall_policy import RecallPolicy
 from memory_write_gate import MemoryWriteGate, WriteGateDecision
 from memory_nodes import MemoryNodeStore
@@ -2076,6 +2077,7 @@ async def _auto_generate_write_moment_if_needed(
 
 def _bucket_read_payload(bucket: dict) -> dict:
     meta = bucket.get("metadata", {})
+    metadata_view = normalize_memory_metadata(bucket)
     fields = [
         "id",
         "name",
@@ -2112,6 +2114,8 @@ def _bucket_read_payload(bucket: dict) -> dict:
     return {
         "id": bucket["id"],
         "metadata": {key: meta.get(key) for key in fields if key in meta},
+        "metadata_view": metadata_view,
+        **metadata_view,
         "content": strip_wikilinks(bucket.get("content", "")),
         "score": decay_engine.calculate_score(meta),
     }
@@ -2119,12 +2123,15 @@ def _bucket_read_payload(bucket: dict) -> dict:
 
 def _bucket_summary_payload(bucket: dict) -> dict:
     meta = bucket.get("metadata", {}) if isinstance(bucket, dict) else {}
+    metadata_view = normalize_memory_metadata(bucket)
     return {
         "id": bucket.get("id", ""),
         "name": meta.get("name", bucket.get("id", "")),
         "type": meta.get("type", "dynamic"),
         "domain": meta.get("domain", []),
         "tags": meta.get("tags", []),
+        "metadata_view": metadata_view,
+        **metadata_view,
         "importance": meta.get("importance", 5),
         "valence": meta.get("valence", 0.5),
         "arousal": meta.get("arousal", 0.5),
@@ -8571,12 +8578,15 @@ async def api_buckets(request):
         result = []
         for b in all_buckets:
             meta = b.get("metadata", {})
+            metadata_view = normalize_memory_metadata(b)
             result.append({
                 "id": b["id"],
                 "name": meta.get("name", b["id"]),
                 "type": meta.get("type", "dynamic"),
                 "domain": meta.get("domain", []),
                 "tags": meta.get("tags", []),
+                "metadata_view": metadata_view,
+                **metadata_view,
                 "valence": meta.get("valence", 0.5),
                 "arousal": meta.get("arousal", 0.3),
                 "model_valence": meta.get("model_valence"),

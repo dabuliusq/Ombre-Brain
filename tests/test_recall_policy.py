@@ -164,6 +164,31 @@ def test_auto_vague_query_without_topic_is_suppressed():
     assert not affect_decision.admit_direct
 
 
+def test_entity_keywords_prevent_short_proper_nouns_from_being_skipped():
+    policy = RecallPolicy()
+
+    assert "伽罗" in policy.extract_entity_keywords("伽罗")
+    assert "恋与深空" in policy.extract_entity_keywords("恋与深空")
+    assert "宁德哥" in policy.extract_entity_keywords("最近宁德哥妈死了")
+    assert "晚怡" in policy.extract_entity_keywords("改好了 再测试一下 晚怡")
+    assert policy.extract_entity_keywords("嗯嗯好的") == []
+    assert "宁德哥" in policy.extract_entity_keywords("找了 对了 再测试一个 宁德哥")
+    assert policy.extract_entity_keywords("最近宁德哥妈死了") == ["宁德哥"]
+    assert policy.extract_entity_keywords("gateway.py") == ["gateway.py"]
+    assert policy.extract_entity_keywords("abc-123") == ["abc-123"]
+    assert "李想" in policy.extract_entity_keywords("李想")
+    assert "问界" in policy.extract_entity_keywords("问界")
+    assert "笑果" in policy.extract_entity_keywords("笑果")
+    assert "问界M9" in policy.extract_entity_keywords("问界M9")
+
+    assert not policy.is_auto_query_too_vague("伽罗")
+    assert not policy.is_auto_query_too_vague("恋与深空")
+    assert not policy.is_auto_query_too_vague("最近宁德哥妈死了")
+    assert not policy.is_auto_query_too_vague("改好了 再测试一下 晚怡")
+    assert policy.is_auto_query_too_vague("嗯嗯好的")
+    assert not policy.is_auto_query_too_vague("找了 对了 再测试一个 宁德哥")
+
+
 def test_short_taste_query_requires_real_taste_evidence():
     policy = RecallPolicy()
 

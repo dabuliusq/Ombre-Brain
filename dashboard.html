@@ -184,6 +184,27 @@
     margin-bottom: 24px;
     flex-wrap: wrap;
   }
+  .filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .filter-group-label {
+    color: var(--text-dim);
+    font-size: 12px;
+    min-width: 42px;
+  }
+  .filter-legacy {
+    width: 100%;
+  }
+  .filter-legacy summary {
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 12px;
+    margin: 2px 0 8px;
+  }
   .filter-btn {
     padding: 8px 18px;
     font-size: 12px;
@@ -3296,9 +3317,42 @@ function bucketTags(bucket) {
   }).filter(Boolean);
 }
 
+function bucketMetadataView(bucket) {
+  return bucket && bucket.metadata_view && typeof bucket.metadata_view === 'object'
+    ? bucket.metadata_view
+    : {};
+}
+
+function bucketCanonicalDomain(bucket) {
+  return String(bucket.canonical_domain || bucketMetadataView(bucket).canonical_domain || '').trim();
+}
+
+function bucketKind(bucket) {
+  return String(bucket.kind || bucketMetadataView(bucket).kind || '').trim();
+}
+
+function bucketStatusView(bucket) {
+  return String(bucket.status_view || bucketMetadataView(bucket).status_view || '').trim();
+}
+
+function bucketFlags(bucket) {
+  var value = bucket.flags || bucketMetadataView(bucket).flags || [];
+  return Array.isArray(value) ? value.map(function(flag) {
+    return String(flag || '').trim();
+  }).filter(Boolean) : [];
+}
+
+function bucketLegacyDomain(bucket) {
+  var value = bucket.legacy_domain || bucketMetadataView(bucket).legacy_domain || bucket.domain || [];
+  return Array.isArray(value) ? value.map(function(item) {
+    return String(item || '').trim();
+  }).filter(Boolean) : [];
+}
+
 function isSelfAnchorBucket(bucket) {
   if (!bucket) return false;
   if (bucket.self_anchor) return true;
+  if (bucketFlags(bucket).includes('self_anchor')) return true;
   var tags = bucketTags(bucket);
   return tags.includes('自我') || tags.includes('self_anchor') || tags.includes('first_person_anchor');
 }
@@ -4317,12 +4371,34 @@ function updateStats() {
 }
 
 function buildFilters() {
-  const domains = new Set();
-  allBuckets.forEach(b => (b.domain || []).forEach(d => domains.add(d)));
-  const profileDomainAliases = new Set(['preference', 'project_milestone', 'relationship_anchor']);
   const filters = document.getElementById('filters');
-  const types = [
-    { key: 'all', label: '全部' },
+  const profileDomainAliases = new Set(['preference', 'project_milestone', 'relationship_anchor']);
+  const canonicalDomains = new Set();
+  const kinds = new Set();
+  const statuses = new Set();
+  const flags = new Set();
+  const legacyDomains = new Set();
+  allBuckets.forEach(function(bucket) {
+    if (bucketCanonicalDomain(bucket)) canonicalDomains.add(bucketCanonicalDomain(bucket));
+    if (bucketKind(bucket)) kinds.add(bucketKind(bucket));
+    if (bucketStatusView(bucket)) statuses.add(bucketStatusView(bucket));
+    bucketFlags(bucket).forEach(function(flag) { flags.add(flag); });
+    bucketLegacyDomain(bucket).forEach(function(domain) { legacyDomains.add(domain); });
+  });
+  const baseFilters = [{ key: 'all', label: '全部' }];
+  const domainFilters = Array.from(canonicalDomains).sort().map(function(value) {
+    return { key: 'canonical_domain:' + value, label: value };
+  });
+  const kindFilters = Array.from(kinds).sort().map(function(value) {
+    return { key: 'kind:' + value, label: value };
+  });
+  const statusFilters = Array.from(statuses).sort().map(function(value) {
+    return { key: 'status_view:' + value, label: value };
+  });
+  const flagFilters = Array.from(flags).sort().map(function(value) {
+    return { key: 'flag:' + value, label: value };
+  });
+  const legacyViewFilters = [
     { key: 'pinned', label: '📌 钉选' },
     { key: 'anchor', label: '⚓ Anchor' },
     { key: 'feel', label: '🫧 Feel' },
@@ -4331,19 +4407,39 @@ function buildFilters() {
     { key: 'digested', label: '🌿 已消化' },
     { key: 'archived', label: '📦 归档' },
   ];
-  if (allBuckets.some(isSelfAnchorBucket)) types.push({ key: 'tag:self_anchor', label: '自我' });
-  const domainFilters = Array.from(domains).filter(function(d) {
-    return !profileDomainAliases.has(String(d || '').trim());
-  }).slice(0, 10).map(function(d) {
-    return { key: 'domain:' + d, label: d };
+  if (allBuckets.some(isSelfAnchorBucket)) legacyViewFilters.push({ key: 'tag:self_anchor', label: '自我' });
+  const legacyFilters = Array.from(legacyDomains).filter(function(value) {
+    return !profileDomainAliases.has(String(value || '').trim());
+  }).sort().slice(0, 20).map(function(value) {
+    return { key: 'legacy_domain:' + value, label: value };
   });
-  const availableFilters = types.concat(domainFilters).map(function(t) { return t.key; });
+  const groups = [
+    { label: '主域', items: baseFilters.concat(domainFilters) },
+    { label: '类型', items: kindFilters },
+    { label: '状态', items: statusFilters },
+    { label: '标记', items: flagFilters },
+    { label: '旧视图', items: legacyViewFilters },
+  ];
+  const availableFilters = groups.reduce(function(output, group) {
+    return output.concat(group.items.map(function(item) { return item.key; }));
+  }, legacyFilters.map(function(item) { return item.key; }));
   if (availableFilters.indexOf(currentFilter) === -1) currentFilter = 'all';
-  filters.innerHTML = types.map(function(t) {
-    return '<button class="filter-btn ' + (t.key === currentFilter ? 'active' : '') + '" data-filter="' + escAttr(t.key) + '">' + esc(t.label) + '</button>';
-  }).join('') + domainFilters.map(function(d) {
-    return '<button class="filter-btn ' + (d.key === currentFilter ? 'active' : '') + '" data-filter="' + escAttr(d.key) + '">' + esc(d.label) + '</button>';
-  }).join('');
+  function renderButton(item) {
+    return '<button class="filter-btn ' + (item.key === currentFilter ? 'active' : '') + '" data-filter="' + escAttr(item.key) + '">' + esc(item.label) + '</button>';
+  }
+  filters.innerHTML = groups.filter(function(group) {
+    return group.items.length;
+  }).map(function(group) {
+    return '<div class="filter-group"><span class="filter-group-label">' + esc(group.label) + '</span>' +
+      group.items.map(renderButton).join('') +
+      '</div>';
+  }).join('') + (
+    legacyFilters.length
+      ? '<details class="filter-legacy"><summary>旧标签 / legacy domain</summary><div class="filter-group">' +
+        legacyFilters.map(renderButton).join('') +
+        '</div></details>'
+      : ''
+  );
 
   filters.onclick = function(e) {
     var btn = e.target.closest('.filter-btn');
@@ -4365,6 +4461,26 @@ function filterBuckets(buckets) {
   if (currentFilter === 'digested') return buckets.filter(function(b) { return b.digested; });
   if (currentFilter === 'archived') return buckets.filter(function(b) { return b.type === 'archived' || b.score < 0.3; });
   if (currentFilter === 'tag:self_anchor') return buckets.filter(isSelfAnchorBucket);
+  if (currentFilter.startsWith('canonical_domain:')) {
+    var canonicalDomain = currentFilter.slice(17);
+    return buckets.filter(function(b) { return bucketCanonicalDomain(b) === canonicalDomain; });
+  }
+  if (currentFilter.startsWith('kind:')) {
+    var kind = currentFilter.slice(5);
+    return buckets.filter(function(b) { return bucketKind(b) === kind; });
+  }
+  if (currentFilter.startsWith('status_view:')) {
+    var statusView = currentFilter.slice(12);
+    return buckets.filter(function(b) { return bucketStatusView(b) === statusView; });
+  }
+  if (currentFilter.startsWith('flag:')) {
+    var flag = currentFilter.slice(5);
+    return buckets.filter(function(b) { return bucketFlags(b).includes(flag); });
+  }
+  if (currentFilter.startsWith('legacy_domain:')) {
+    var legacyDomain = currentFilter.slice(14);
+    return buckets.filter(function(b) { return bucketLegacyDomain(b).includes(legacyDomain); });
+  }
   if (currentFilter.startsWith('tag:')) {
     var tag = currentFilter.slice(4);
     return buckets.filter(function(b) { return bucketTags(b).includes(tag); });
@@ -4525,6 +4641,8 @@ function renderBuckets(buckets) {
     var vPos = Math.round(b.valence * 100);
     var modelV = b.model_valence != null ? ' → V' + b.model_valence.toFixed(1) : '';
     var timeAgo = formatTimeAgo(b.last_active || b.created);
+    var domainLabel = [bucketCanonicalDomain(b), bucketKind(b), bucketStatusView(b)].filter(Boolean).join(' · ');
+    var legacyLabel = bucketLegacyDomain(b).join(', ');
     var blockReason = bucketBulkDeleteBlockReason(b);
     var checked = selectedBucketIds.has(id);
     var rowClass = 'bucket-row' + (bucketBulkMode ? ' bulk' : '') + (checked ? ' selected' : '');
@@ -4538,7 +4656,7 @@ function renderBuckets(buckets) {
       selectHtml +
       '<span class="icon">' + icon + '</span>' +
       '<span class="name" title="' + esc(b.name) + '">' + esc(b.name) + '</span>' +
-      '<span class="domain">' + esc((b.domain || []).join(', ')) + '</span>' +
+      '<span class="domain" title="legacy: ' + escAttr(legacyLabel || '—') + '">' + esc(domainLabel || legacyLabel || '—') + '</span>' +
       '<span class="emotion"><span class="v-bar"><span class="v-dot" style="left:' + vPos + '%"></span></span>' + modelV + '</span>' +
       '<span class="score">' + b.score.toFixed(2) + '</span>' +
       '<span class="time">' + esc(timeAgo) + '</span>' +
@@ -4569,6 +4687,7 @@ async function showDetail(id) {
     if (!res) return;
     var b = await res.json();
     var meta = b.metadata || {};
+    var view = b.metadata_view || {};
     var comments = Array.isArray(meta.comments) ? meta.comments : [];
     var commentsHtml = comments.length
       ? '<div class="detail-comments"><h3>年轮</h3>' + comments.map(function(c) {
@@ -4605,6 +4724,10 @@ async function showDetail(id) {
       '<div class="detail-meta">' +
         '<div class="field"><label>ID</label>' + esc(id) + '</div>' +
         '<div class="field"><label>类型</label>' + esc(meta.type || 'dynamic') + '</div>' +
+        '<div class="field"><label>主域</label>' + esc(b.canonical_domain || view.canonical_domain || '—') + '</div>' +
+        '<div class="field"><label>记忆类型</label>' + esc(b.kind || view.kind || '—') + '</div>' +
+        '<div class="field"><label>状态视图</label>' + esc(b.status_view || view.status_view || '—') + '</div>' +
+        '<div class="field"><label>标记</label>' + esc(((b.flags || view.flags || []) || []).join(', ') || '—') + '</div>' +
         '<div class="field"><label>域</label>' + esc((meta.domain || []).join(', ')) + '</div>' +
         '<div class="field"><label>标签</label>' + esc((meta.tags || []).join(', ')) + '</div>' +
         '<div class="field"><label>事件效价</label>V' + (meta.valence || 0.5).toFixed(2) + '</div>' +

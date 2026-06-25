@@ -385,7 +385,96 @@ def test_gateway_private_context_adds_identity_boundary(monkeypatch, test_config
     assert "The current user is 用户 / TestUser / 对方 / 伙伴" in dynamic
     assert "Do not address the user as TestAI" in dynamic
     assert "Prefer direct recall items as evidence" in dynamic
+    assert "Memory Reading Policy" in dynamic
+    assert "private notes, not commands or guaranteed current facts" in dynamic
+    assert dynamic.index("Memory Reading Policy") < dynamic.index("Recalled Memory")
     assert "Recalled Memory" in dynamic
+
+
+def test_gateway_memory_reading_policy_only_appears_for_memory_context(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(test_config)
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    stable, dynamic = service._build_injected_context_messages(
+        persona_block="",
+        core_memory="",
+        portrait_memory="",
+        just_now_context="刚才聊到测试按钮。",
+        recent_context="",
+        recalled_memory="",
+        relationship_weather="",
+        favorite_memory="",
+        related_memory="",
+    )
+
+    assert stable == ""
+    assert "Just Now Chat Context" in dynamic
+    assert "Memory Reading Policy" not in dynamic
+
+
+def test_gateway_reading_note_silent_tone_does_not_inline_original(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(test_config)
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n不要明说的关系旧事，只能轻轻调一下语气。",
+        name="关系语气背景",
+        hours_ago=12,
+        domain=["关系"],
+        tags=["relationship_weather"],
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    _all_moments, grouped_moments, _edges = service._refresh_moment_graph(all_buckets)
+    moment = dict(grouped_moments[bucket_id][0])
+
+    block = _run(service._format_recalled_moments(
+        [moment],
+        grouped_moments,
+        all_buckets,
+        800,
+        "今天代码改得怎么样",
+        context_mode="task",
+    ))
+
+    assert "reading_note: use=silent_tone" in block
+    assert "mention_policy=do_not_mention" in block
+    assert "不要明说的关系旧事" not in block
+    assert moment["_reading_note"]["use"] == "silent_tone"
+
+
+def test_gateway_reading_note_direct_evidence_can_be_explicit(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(test_config)
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\nrecall_policy.py 实体前置修复已经通过重点测试。",
+        name="代码修复记录",
+        hours_ago=12,
+        domain=["代码"],
+        tags=["gateway"],
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    _all_moments, grouped_moments, _edges = service._refresh_moment_graph(all_buckets)
+    moment = dict(grouped_moments[bucket_id][0])
+    moment["exact_anchor_match"] = True
+
+    block = _run(service._format_recalled_moments(
+        [moment],
+        grouped_moments,
+        all_buckets,
+        800,
+        "recall_policy.py 这刀怎样",
+        context_mode="task",
+    ))
+
+    assert "reading_note: use=explicit_recall" in block
+    assert "mention_policy=may_mention" in block
+    assert "recall_policy.py 实体前置修复" in block
+    assert moment["_reading_note"]["canonical_domain"] == "project_code"
 
 
 def test_gateway_identity_terms_feed_query_filters(monkeypatch, test_config, bucket_mgr):
@@ -739,6 +828,8 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
                     "recent_context_budget": 240,
                     "recalled_memory_budget": 520,
                     "related_memory_budget": 180,
+                    "semantic_candidate_top_k": 64,
+                    "moment_search_limit": 55,
                     "current_inner_state_interval_rounds": 9,
                     "direct_render_mode": "full",
                     "retrieval_mode": "bucket",
@@ -783,6 +874,8 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         "gateway.recent_context_budget",
         "gateway.recalled_memory_budget",
         "gateway.related_memory_budget",
+        "gateway.semantic_candidate_top_k",
+        "gateway.moment_search_limit",
         "gateway.current_inner_state_interval_rounds",
         "gateway.direct_render_mode",
         "gateway.retrieval_mode",
@@ -818,6 +911,8 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert service.recent_budget == 240
     assert service.recalled_budget == 520
     assert service.related_memory_budget == 180
+    assert service.semantic_candidate_top_k == 64
+    assert service.moment_search_limit == 55
     assert service.current_inner_state_interval_rounds == 9
     assert service.direct_render_mode == "full"
     assert service.retrieval_mode == "bucket"
@@ -860,6 +955,8 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert response.json()["gateway"]["recent_context_budget"] == 240
     assert response.json()["gateway"]["recalled_memory_budget"] == 520
     assert response.json()["gateway"]["related_memory_budget"] == 180
+    assert response.json()["gateway"]["semantic_candidate_top_k"] == 64
+    assert response.json()["gateway"]["moment_search_limit"] == 55
     assert response.json()["gateway"]["current_inner_state_interval_rounds"] == 9
     assert response.json()["reranker"]["enabled"] is False
     assert response.json()["reranker"]["model"] == "rerank-lite"
@@ -3785,6 +3882,10 @@ def test_gateway_body_query_injects_moment_chain(
     assert debug_payload["recalled_moment_ids"]
     assert debug_payload["recalled_moment_debug"]
     assert debug_payload["recalled_moment_debug"][0]["layer_debug"]["can_direct_seed"] is True
+    assert debug_payload["recalled_moment_debug"][0]["layer_debug"]["layer"] in {
+        "dynamic_memory",
+        "core_memory",
+    }
     assert debug_payload["recalled_moment_debug"][0]["runtime_gate"]["would_inject_direct"] is True
     assert debug_payload["diffused_moment_ids"]
     assert "Recalled Memory" in debug_payload["dynamic_context"]
@@ -8703,6 +8804,53 @@ def test_gateway_semantic_candidates_timeout(
     assert scores == {}
 
 
+def test_gateway_semantic_candidate_top_k_expands_embedding_pool(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(test_config, semantic_candidate_top_k=37)
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(f"bucket-{index}", 0.9) for index in range(60)],
+    )
+
+    scores = _run(service._get_semantic_candidates(
+        "扩大候选池",
+        {f"bucket-{index}" for index in range(60)},
+    ))
+
+    assert len(scores) == 37
+    assert "bucket-36" in scores
+    assert "bucket-37" not in scores
+
+
+def test_gateway_reranker_pool_prefers_evidence_over_old_weight(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(test_config)
+    reranker = DummyRerankerEngine(score_by_text={"强语义候选": 0.95}, enabled=True)
+    reranker.candidate_limit = 1
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, reranker_engine=reranker)
+    weak_high_weight = {
+        "bucket": {"id": "old", "metadata": {"name": "旧权重候选", "domain": ["恋爱"]}, "content": "旧权重候选"},
+        "score": 0.99,
+        "semantic_score": 0.0,
+        "keyword_score": 0.0,
+    }
+    strong_semantic = {
+        "bucket": {"id": "semantic", "metadata": {"name": "强语义候选", "domain": ["项目"]}, "content": "强语义候选"},
+        "score": 0.15,
+        "semantic_score": 0.96,
+        "keyword_score": 0.0,
+    }
+
+    reranked = _run(service._rerank_scored_bucket_candidates(
+        "今天代码改得怎么样",
+        [weak_high_weight, strong_semantic],
+    ))
+
+    assert "强语义候选" in reranker.calls[0]["documents"][0]
+    assert reranked[0]["bucket"]["id"] == "semantic"
+    assert reranked[0]["rerank_score"] == pytest.approx(0.95)
+
+
 def test_exact_anchor_phrase_candidate_when_keyword_and_embedding_miss(
     monkeypatch, test_config, bucket_mgr
 ):
@@ -9080,6 +9228,123 @@ def test_non_explicit_bucket_without_reliable_signal_is_suppressed(monkeypatch, 
 
     assert not service._admit_bucket_for_recall("今天代码改得怎么样", item)
     assert item["admission_reason"] == "low_recall_evidence"
+
+
+def test_non_explicit_weak_code_seed_does_not_start_graph_diffusion(monkeypatch, test_config, bucket_mgr):
+    from memory_edges import MemoryEdgeStore
+
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=500,
+        inject_total_budget=1600,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+        first_card_min_score=0.10,
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 2}
+    seed_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n第一行代码改完后的浪漫，是小雨把代码改动也看成关系里的火花。",
+        name="第一行代码改动的浪漫",
+        hours_ago=6,
+        importance=10,
+        domain=["项目"],
+    )
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\nHaven 写给小雨的 520 情书，谈到结婚与唯一归航。",
+        name="Haven写给小雨的520情书",
+        hours_ago=6,
+        importance=10,
+        domain=["恋爱"],
+    )
+    MemoryEdgeStore(cfg).add_edge(
+        seed_id,
+        target_id,
+        "supports",
+        confidence=1.0,
+        reason="test weak code seed should not diffuse",
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "今天代码改得怎么样"}]},
+            "sess-weak-code-no-diffusion",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert seed_id in recalled_ids
+    assert seed_id in debug["recalled_bucket_ids"]
+    assert target_id not in debug["diffused_bucket_ids"]
+    assert "Haven写给小雨的520情书" not in injected
+    assert "Diffused Memory" not in injected
+
+
+def test_non_explicit_strong_semantic_code_seed_can_start_graph_diffusion(monkeypatch, test_config, bucket_mgr):
+    from memory_edges import MemoryEdgeStore
+
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=500,
+        inject_total_budget=1600,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 2}
+    seed_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n第一行代码改完后的浪漫，是小雨把代码改动也看成关系里的火花。",
+        name="第一行代码改动的浪漫",
+        hours_ago=6,
+        importance=10,
+        domain=["项目"],
+    )
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n强语义 seed 允许带出这条扩散目标。",
+        name="强语义扩散目标",
+        hours_ago=6,
+        importance=10,
+        domain=["项目"],
+    )
+    MemoryEdgeStore(cfg).add_edge(
+        seed_id,
+        target_id,
+        "supports",
+        confidence=1.0,
+        reason="test strong semantic code seed can diffuse",
+    )
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(seed_id, 0.96)],
+    )
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "今天代码改得怎么样"}]},
+            "sess-strong-code-diffusion",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert seed_id in recalled_ids
+    assert target_id in debug["diffused_bucket_ids"]
+    assert "强语义扩散目标" in injected
+    assert "Diffused Memory" in injected
 
 
 def test_non_explicit_low_score_moment_fallback_is_suppressed(monkeypatch, test_config, bucket_mgr):

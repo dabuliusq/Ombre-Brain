@@ -451,6 +451,85 @@ SHORT_CASUAL_FILLER_TERMS = frozenset(
         "诶",
     }
 )
+ENTITY_KEYWORD_POS_PREFIXES = ("nr", "ns", "nz")
+ENTITY_KEYWORD_POS_TAGS = frozenset({"eng"})
+ENTITY_KEYWORD_TITLE_SUFFIXES = ("哥哥", "姐姐", "老师", "学长", "学姐", "哥", "姐")
+ENTITY_KEYWORD_SHELL_TERMS = frozenset(
+    {
+        *AUTO_VAGUE_FILLER_TERMS,
+        *AUTO_VAGUE_RECALL_MARKERS,
+        *SHORT_CASUAL_FILLER_TERMS,
+        *RESPONSE_ACTION_FILLER_TERMS,
+        "找了",
+        "找",
+        "对了",
+        "对",
+        "再",
+        "再测",
+        "再测试",
+        "测试一下",
+        "测试",
+        "试一下",
+        "试试",
+        "改好了",
+        "改好",
+        "好了",
+        "输入",
+        "提到",
+        "提起",
+        "说到",
+        "问到",
+        "关于",
+        "纯废话",
+        "端",
+    }
+)
+ENTITY_KEYWORD_STOP_TERMS = frozenset(
+    {
+        *ENTITY_KEYWORD_SHELL_TERMS,
+        *AFFECT_ONLY_QUERY_TERMS,
+        "嗯",
+        "嗯嗯",
+        "好的",
+        "好",
+        "行",
+        "可以",
+        "不要",
+        "不用",
+        "知道",
+        "觉得",
+        "死亡",
+        "死了",
+    }
+)
+ENTITY_KEYWORD_VERB_BLOCKERS = frozenset(
+    {
+        "死",
+        "哭",
+        "笑",
+        "想",
+        "找",
+        "对",
+        "改",
+        "测",
+        "试",
+        "说",
+        "问",
+        "看",
+        "查",
+        "做",
+        "弄",
+        "写",
+        "发",
+        "回",
+        "聊",
+        "输入",
+    }
+)
+ENTITY_QUOTED_RE = re.compile(r"[\"'“”‘’「」『』《》`]+([^\"'“”‘’「」『』《》`]{1,32})[\"'“”‘’「」『』《》`]+")
+ENTITY_ENGLISH_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_.:/-]{1,}\b")
+ENTITY_VERSION_RE = re.compile(r"\b\d+(?:[._:-]\d+)+\b")
+ENTITY_NUMBER_RE = re.compile(r"\b\d{3,}\b")
 
 
 @dataclass(frozen=True)
@@ -848,6 +927,8 @@ class RecallPolicy:
             return True
         if query_has_explicit_entity_marker(text) or query_has_technical_recall_marker(text):
             return False
+        if self.extract_entity_keywords(text):
+            return False
         if self._is_affect_only_query(text):
             return True
         if self._is_context_free_response_action_query(text):
@@ -1010,6 +1091,8 @@ class RecallPolicy:
         )
         if not any(marker in text for marker in probe_markers):
             return False
+        if any(re.search(r"[\u4e00-\u9fff]", term) for term in self.extract_entity_keywords(text)):
+            return False
         recall_intent_markers = (
             "记得",
             "记忆",
@@ -1117,6 +1200,172 @@ class RecallPolicy:
                 if re.search(r"觉得.{1,16}" + pattern, window):
                     return True
         return False
+
+    def extract_entity_keywords(self, query: str) -> list[str]:
+        raw = str(query or "").strip()
+        if not raw:
+            return []
+        keywords: list[str] = []
+        seen: set[str] = set()
+        strong_keys: set[str] = set()
+
+        def add(value: object, *, strong: bool = False) -> None:
+            cleaned = self._normalize_entity_keyword(value)
+            if not cleaned or not self._entity_keyword_allowed(cleaned, strong=strong):
+                return
+            key = self._compact_entity_keyword(cleaned)
+            if not key or key in seen:
+                return
+            seen.add(key)
+            if strong:
+                strong_keys.add(key)
+            keywords.append(cleaned)
+
+        for match in ENTITY_QUOTED_RE.finditer(raw):
+            add(match.group(1), strong=True)
+        for match in ENTITY_VERSION_RE.finditer(raw):
+            add(match.group(0), strong=True)
+        for match in ENTITY_ENGLISH_RE.finditer(raw):
+            add(match.group(0), strong=True)
+        for match in ENTITY_NUMBER_RE.finditer(raw):
+            add(match.group(0), strong=True)
+        for match in re.finditer(r"[A-Za-z0-9_.:-]*[\u4e00-\u9fff]+[A-Za-z0-9_.:-]+|[A-Za-z0-9_.:-]+[\u4e00-\u9fff]+[A-Za-z0-9_.:-]*", raw):
+            mixed = match.group(0)
+            stripped = self._strip_entity_shell(mixed)
+            value = mixed if stripped == self._compact_entity_keyword(mixed) else stripped
+            add(value, strong=True)
+
+        for word, flag in self._posseg_words(raw):
+            if (
+                flag in ENTITY_KEYWORD_POS_TAGS
+                or any(str(flag or "").startswith(prefix) for prefix in ENTITY_KEYWORD_POS_PREFIXES)
+            ):
+                add(word, strong=True)
+                for expanded in self._expand_entity_title_suffixes(raw, word):
+                    add(expanded, strong=True)
+
+        for span in re.findall(r"[\u4e00-\u9fff]{2,16}", raw):
+            candidate = self._strip_entity_shell(span)
+            if 2 <= len(candidate) <= 8 and not self._entity_candidate_has_verb_blocker(candidate):
+                add(candidate)
+
+        return self._dedupe_entity_keywords(keywords, strong_keys=strong_keys)
+
+    def _dedupe_entity_keywords(self, values: list[str], *, strong_keys: set[str] | None = None) -> list[str]:
+        strong_keys = strong_keys or set()
+        pairs: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = self._normalize_entity_keyword(value)
+            key = self._compact_entity_keyword(cleaned)
+            if not cleaned or not key or key in seen:
+                continue
+            seen.add(key)
+            pairs.append((cleaned, key))
+        output: list[str] = []
+        for cleaned, key in pairs:
+            if key in strong_keys:
+                contained_by_longer = any(
+                    other_key != key and other_key in strong_keys and key in other_key
+                    for _other, other_key in pairs
+                )
+                noisy_extension_of_strong = False
+            else:
+                contained_by_longer = any(
+                    other_key != key and other_key not in strong_keys and key in other_key
+                    for _other, other_key in pairs
+                )
+                noisy_extension_of_strong = any(
+                    other_key != key and other_key in strong_keys and other_key in key
+                    for _other, other_key in pairs
+                )
+            if contained_by_longer or noisy_extension_of_strong:
+                continue
+            output.append(cleaned)
+        return output
+
+    @staticmethod
+    def _posseg_words(text: str) -> list[tuple[str, str]]:
+        try:
+            import jieba.posseg as pseg
+        except Exception:
+            return []
+        try:
+            return [(str(item.word), str(item.flag)) for item in pseg.cut(text)]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _normalize_entity_keyword(value: object) -> str:
+        cleaned = str(value or "").strip().strip("\"'`“”‘’「」『』《》")
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned.strip("，。！？、,.!?:：;；~～♡❤♥（）()[]【】")
+
+    @staticmethod
+    def _compact_entity_keyword(value: object) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff_.:-]+", "", str(value or "").strip().lower())
+
+    def _entity_keyword_allowed(self, value: str, *, strong: bool = False) -> bool:
+        compact = self._compact_entity_keyword(value)
+        if not compact:
+            return False
+        if compact in ENTITY_KEYWORD_STOP_TERMS or self._is_recall_context_term(compact):
+            return False
+        if compact in self.ai_reaction_names:
+            return False
+        if ENTITY_VERSION_RE.fullmatch(compact) or ENTITY_NUMBER_RE.fullmatch(compact):
+            return True
+        if re.fullmatch(r"[a-z][a-z0-9_.:/-]{1,}", compact):
+            return compact not in ENTITY_KEYWORD_STOP_TERMS
+        if re.fullmatch(r"[\u4e00-\u9fff]+", compact):
+            residue = self._strip_entity_shell(compact)
+            if len(residue) < 2 or len(residue) > 8:
+                return False
+            if residue in ENTITY_KEYWORD_STOP_TERMS or self._is_affect_only_query(residue):
+                return False
+            if not strong and self._entity_candidate_has_verb_blocker(residue):
+                return False
+            return True
+        return True
+
+    def _strip_entity_shell(self, value: object) -> str:
+        residue = self._compact_entity_keyword(value)
+        for term in sorted(ENTITY_KEYWORD_SHELL_TERMS, key=len, reverse=True):
+            cleaned = self._compact_entity_keyword(term)
+            if cleaned:
+                residue = residue.replace(cleaned, "")
+        residue = re.sub(r"[我你他她它的是了嘛吗呢啊呀欸诶吧哈嗯呜]+", "", residue)
+        return residue
+
+    @staticmethod
+    def _entity_candidate_has_verb_blocker(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        if text in ENTITY_KEYWORD_VERB_BLOCKERS:
+            return True
+        chars = [char for char in text if re.fullmatch(r"[\u4e00-\u9fff]", char)]
+        return bool(chars and len(chars) == len(text) and all(char in ENTITY_KEYWORD_VERB_BLOCKERS for char in chars))
+
+    def _expand_entity_title_suffixes(self, raw: str, entity: str) -> list[str]:
+        compact_raw = self._compact_entity_keyword(raw)
+        compact_entity = self._compact_entity_keyword(entity)
+        if not compact_raw or not compact_entity:
+            return []
+        output: list[str] = []
+        start = 0
+        while True:
+            index = compact_raw.find(compact_entity, start)
+            if index < 0:
+                break
+            tail = compact_raw[index + len(compact_entity):]
+            for suffix in sorted(ENTITY_KEYWORD_TITLE_SUFFIXES, key=len, reverse=True):
+                compact_suffix = self._compact_entity_keyword(suffix)
+                if compact_suffix and tail.startswith(compact_suffix):
+                    output.append(entity + suffix)
+                    break
+            start = index + max(1, len(compact_entity))
+        return output
 
     def specific_query_terms(self, query: str) -> list[str]:
         raw = str(query or "")

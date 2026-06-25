@@ -216,6 +216,41 @@ async def test_create_memory_api_requires_write_token(monkeypatch, bucket_mgr):
 
 
 @pytest.mark.asyncio
+async def test_dashboard_bucket_payloads_include_read_only_metadata_view(monkeypatch, bucket_mgr, decay_eng):
+    import server
+
+    bucket_id = await bucket_mgr.create(
+        content="### moment\nGateway recall 低证据门还没完全收好。",
+        name="Gateway recall 修复",
+        domain=["AI", "未解决"],
+        tags=["gateway", "source_record"],
+        resolved=False,
+    )
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "decay_engine", decay_eng)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+
+    list_response = await server.api_buckets(DummyRequest())
+    list_payload = json.loads(list_response.body)
+    row = next(item for item in list_payload if item["id"] == bucket_id)
+
+    assert row["canonical_domain"] == "ai_tools"
+    assert row["kind"] == "source_record"
+    assert row["status_view"] == "unresolved"
+    assert row["legacy_domain"] == ["AI", "未解决"]
+    assert row["metadata_view"]["flags"] == ["source_record"]
+
+    detail_response = await server.api_bucket_detail(DummyRequest(path_params={"bucket_id": bucket_id}))
+    detail_payload = json.loads(detail_response.body)
+    stored = await bucket_mgr.get(bucket_id)
+
+    assert detail_payload["metadata_view"] == row["metadata_view"]
+    assert "canonical_domain" not in stored["metadata"]
+    assert "kind" not in stored["metadata"]
+    assert "status_view" not in stored["metadata"]
+
+
+@pytest.mark.asyncio
 async def test_breath_appends_surface_dream_block(monkeypatch, bucket_mgr, decay_eng):
     import server
 

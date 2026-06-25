@@ -173,7 +173,7 @@ reranker:
   model: "Qwen/Qwen3-Reranker-4B"
   base_url: ""
   # api_key: ""                   # Use OMBRE_RERANKER_API_KEY or reuse embedding key
-  candidate_limit: 20
+  candidate_limit: 30
   score_weight: 0.65
   timeout_seconds: 12
   # Env vars / 环境变量:
@@ -379,10 +379,12 @@ gateway:
   word_map_hint_moment_boost: 0.25   # weak moment-search boost for hinted buckets in graph retrieval mode
   word_map_hint_neighbor_limit: 6
   word_map_hint_bucket_limit: 12
+  semantic_candidate_top_k: 50       # internal embedding candidate pool; visible injection stays gated
+  moment_search_limit: 50            # internal moment candidate pool for graph retrieval
   semantic_weight: 0.45
   keyword_weight: 0.35
-  importance_weight: 0.10
-  freshness_weight: 0.10
+  importance_weight: 0.03            # tie-breaker only; not a relevance gate
+  freshness_weight: 0.03             # tie-breaker only; not a relevance gate
   first_card_min_score: 0.55
   second_card_min_score: 0.50
   second_card_relative_score: 0.85
