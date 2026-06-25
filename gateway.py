@@ -10226,23 +10226,35 @@ class GatewayService:
             )
         ]
         active_pool = filtered or scored_candidates
-        admitted_pool = []
-        suppressed_candidates = []
         required_terms = required_terms or []
-        for item in active_pool:
-            if required_terms and not self._bucket_matches_any_planner_term(item.get("bucket") or {}, required_terms):
-                item["admission_reason"] = "planner_must_terms_missing"
-                item["recall_policy_debug"] = {
-                    "planner_must_terms": required_terms,
-                    "must_terms_matched": False,
-                    "auto": True,
-                }
-                suppressed_candidates.append(item)
-                continue
-            if self._admit_bucket_for_recall(query, item):
-                admitted_pool.append(item)
-            else:
-                suppressed_candidates.append(item)
+
+        def admit_candidate_pool(pool: list[dict]) -> tuple[list[dict], list[dict]]:
+            admitted: list[dict] = []
+            suppressed: list[dict] = []
+            for raw_item in pool:
+                item = dict(raw_item)
+                if required_terms and not self._bucket_matches_any_planner_term(item.get("bucket") or {}, required_terms):
+                    item["admission_reason"] = "planner_must_terms_missing"
+                    item["recall_policy_debug"] = {
+                        "planner_must_terms": required_terms,
+                        "must_terms_matched": False,
+                        "auto": True,
+                    }
+                    suppressed.append(item)
+                    continue
+                if self._admit_bucket_for_recall(query, item):
+                    admitted.append(item)
+                else:
+                    suppressed.append(item)
+            return admitted, suppressed
+
+        admitted_pool, suppressed_candidates = admit_candidate_pool(active_pool)
+        if (
+            not admitted_pool
+            and filtered
+            and len(filtered) < len(scored_candidates)
+        ):
+            admitted_pool, suppressed_candidates = admit_candidate_pool(scored_candidates)
         mark("admit_candidates", stage_started_at)
         admitted_pool.sort(key=lambda item: self._bucket_final_candidate_rank(query, item, recent_ids=recent_ids))
         return admitted_pool, suppressed_candidates

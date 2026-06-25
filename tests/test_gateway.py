@@ -9167,6 +9167,59 @@ def test_suppressed_semantic_bucket_can_still_feed_moment_seed_promotion(
     assert not suppressed
 
 
+def test_recent_cooldown_retries_semantic_bucket_for_moment_promotion(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        inject_max_cards=1,
+        first_card_min_score=0.35,
+        skip_recent_rounds=6,
+        word_map_hint_enabled=False,
+    )
+    target_bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n海边神庙的故事里，女祭司把灯放在岸边。",
+        name="海边神庙的离别故事",
+        hours_ago=12,
+    )
+    noise_bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n水煎包和早餐偏好无关这次故事。",
+        name="水煎早餐",
+        hours_ago=12,
+    )
+    _, service, state_store, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(target_bucket_id, 0.41), (noise_bucket_id, 0.30)],
+    )
+    monkeypatch.setattr(bucket_mgr, "_calc_topic_score", lambda query, bucket: 0.0)
+    state_store.record_success("sess-cooldown-semantic-retry", [target_bucket_id])
+
+    all_buckets = _run(bucket_mgr.list_all())
+    all_moments, grouped_moments, _ = service._refresh_moment_graph(all_buckets)
+    selected, candidates, _suppressed, _suppressed_buckets, _planner_debug = _run(
+        service._select_dynamic_moments(
+            "水边",
+            "sess-cooldown-semantic-retry",
+            all_buckets,
+            grouped_moments,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert [moment["bucket_id"] for moment in selected] == [target_bucket_id]
+    assert selected[0]["promoted_direct_seed"] is True
+    assert target_bucket_id in {moment["bucket_id"] for moment in candidates}
+
+
 def test_compound_query_preserves_distinct_anchor_cards(
     monkeypatch, test_config, bucket_mgr
 ):
