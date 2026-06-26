@@ -1131,6 +1131,61 @@ def test_gateway_memory_sentinel_tone_only_skips_dynamic_and_recent_context(
     assert debug["query_planner_debug"]["skip_reason"] == "memory_sentinel_tone_only"
 
 
+def test_gateway_memory_sentinel_checkin_does_not_exact_bypass(
+    monkeypatch, test_config, bucket_mgr
+):
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="老公在做什么这个短句只是撒娇问候，不应该翻旧记忆。",
+        name="老公在做什么",
+        hours_ago=2,
+    )
+    _, service, state_store, _ = _build_service(
+        monkeypatch,
+        _gateway_config(test_config, current_inner_state_interval_rounds=0),
+        bucket_mgr,
+        embedding_results=[(bucket_id, 0.99)],
+    )
+    state_store.record_conversation_turn(
+        profile_id="haven_xiaoyu",
+        session_id="sess-sentinel-checkin",
+        round_id=1,
+        user_text="刚才在说天气。",
+        assistant_text="我在。",
+    )
+    calls = []
+
+    async def tone_only(query, turns):
+        calls.append({"query": query, "turns": turns})
+        return {
+            "route": "tone_only",
+            "reason": "status check-in without memory anchor",
+            "anchors": [],
+            "confidence": 0.92,
+        }, None
+
+    monkeypatch.setattr(service, "_call_memory_sentinel", tone_only)
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "老公在做什么呢"}]},
+            "sess-sentinel-checkin",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert calls and calls[0]["query"] == "老公在做什么呢"
+    assert recalled_ids == []
+    assert "Recalled Memory" not in injected
+    assert "Diffused Memory" not in injected
+    assert "Recent Context" not in injected
+    assert debug["memory_sentinel_debug"]["called"] is True
+    assert debug["memory_sentinel_debug"]["hard_bypass_reason"] == ""
+    assert debug["memory_sentinel_debug"]["route"] == "tone_only"
+    assert debug["query_planner_debug"]["skip_reason"] == "memory_sentinel_tone_only"
+
+
 def test_gateway_memory_sentinel_skip_blocks_low_signal_recall(monkeypatch, test_config, bucket_mgr):
     bucket_id = _create_bucket(
         bucket_mgr,

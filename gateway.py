@@ -241,7 +241,7 @@ Routes:
 - search: the user is asking for old context, a past event, a reason/background, or a followup whose referent is in recent turns.
 - tone_only: affectionate, intimate, comfort, or light emotional contact where familiar tone may help but old events should not be retrieved.
 - skip: pure acknowledgement, laughter, ping/test, empty reaction, or no useful memory anchor.
-Do not treat generic affection, crying, missing, hugging, or "哥哥在吗" as search unless recent turns provide a concrete old-event referent.
+Do not treat generic affection, crying, missing, hugging, presence checks, or status check-ins such as "哥哥在吗", "老公在做什么呢", "你在干嘛" as search unless recent turns provide a concrete old-event referent.
 If searchable, include concrete anchors only; omit generic words such as memory, recent, context, remember, emotion, status, 哭, 想你, 抱抱.
 Schema:
 {
@@ -9624,6 +9624,10 @@ class GatewayService:
             return "targeted_memory_detail"
         if self._extract_explicit_bucket_ids_from_text(text) or self._extract_explicit_moment_ids_from_text(text):
             return "explicit_memory_id"
+        if self._query_has_explicit_recall_marker(text):
+            return "explicit_recall_marker"
+        if self._memory_sentinel_should_review_checkin(text):
+            return ""
         normalized = self._normalized_recall_query(text)
         exact_terms = self._extract_exact_anchor_terms(text, normalized)
         if exact_terms and not self._memory_sentinel_low_signal_exact_anchor_only(text, exact_terms):
@@ -9633,8 +9637,6 @@ class GatewayService:
             return "entity"
         if self.recall_policy.requires_topic_evidence(text):
             return "topic_evidence_marker"
-        if self._query_has_explicit_recall_marker(text):
-            return "explicit_recall_marker"
         if any(
             self._is_source_record_bucket(bucket)
             and self._source_record_explicit_bucket_match_reason(text, bucket)
@@ -9665,6 +9667,49 @@ class GatewayService:
             "memory",
         )
         return any(marker in text for marker in markers)
+
+    def _memory_sentinel_should_review_checkin(self, query: str) -> bool:
+        compact = self._compact_lookup_key(query)
+        if not compact:
+            return False
+        checkin_markers = (
+            "在吗",
+            "在不在",
+            "在干嘛",
+            "在干什么",
+            "在做什么",
+            "在做啥",
+            "干嘛呢",
+            "干什么呢",
+            "做什么呢",
+            "做啥呢",
+            "忙什么",
+            "忙啥",
+            "在忙吗",
+            "在忙什么",
+            "在忙啥",
+        )
+        if any(marker in compact for marker in checkin_markers):
+            return True
+        address_terms = (
+            self.identity.get("ai_name"),
+            "haven",
+            "老公",
+            "哥哥",
+            "宝贝",
+            "宝宝",
+            "亲爱的",
+        )
+        address_keys = [
+            self._compact_lookup_key(term)
+            for term in address_terms
+            if self._compact_lookup_key(term)
+        ]
+        trailing_particles = ("呢", "呀", "啊", "嘛", "吗", "么", "?", "？", "啦", "喔", "哦")
+        for address in address_keys:
+            if compact == address or any(compact == f"{address}{particle}" for particle in trailing_particles):
+                return True
+        return False
 
     def _memory_sentinel_low_signal_entity_only(self, query: str, entity_terms: list[str]) -> bool:
         if not entity_terms:
