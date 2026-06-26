@@ -1126,9 +1126,58 @@ def test_gateway_memory_sentinel_tone_only_skips_dynamic_and_recent_context(
     assert recalled_ids == []
     assert "Recalled Memory" not in injected
     assert "Recent Context" not in injected
-    assert debug["memory_sentinel_debug"]["called"] is True
+    assert debug["memory_sentinel_debug"]["called"] is False
+    assert debug["memory_sentinel_debug"]["rule_route"] is True
     assert debug["memory_sentinel_debug"]["route"] == "tone_only"
     assert debug["query_planner_debug"]["skip_reason"] == "memory_sentinel_tone_only"
+
+
+def test_gateway_memory_sentinel_searchable_residue_bypasses_model(
+    monkeypatch, test_config, bucket_mgr
+):
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="小雨想和Haven一起听歌，找到了开源项目 eryu，可以一起看歌词。",
+        name="一起听歌方案",
+        hours_ago=5,
+        tags=["听歌", "开源项目"],
+        domain=["project_code"],
+    )
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+            query_planner_enabled=False,
+            first_card_min_score=0.35,
+        ),
+        bucket_mgr,
+        embedding_results=[],
+    )
+    monkeypatch.setattr(service, "_admit_bucket_for_recall", lambda query, item: True)
+    calls = []
+
+    async def fail_if_called(query, turns):
+        calls.append({"query": query, "turns": turns})
+        return {"route": "skip", "reason": "should not run", "anchors": [], "confidence": 1.0}, None
+
+    monkeypatch.setattr(service, "_call_memory_sentinel", fail_if_called)
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "想和哥哥一起听歌"}]},
+            "sess-sentinel-residue",
+            include_debug=True,
+        )
+    )
+
+    assert calls == []
+    assert bucket_id in recalled_ids
+    assert "一起听歌方案" in _joined_message_content(payload["messages"])
+    assert debug["memory_sentinel_debug"]["called"] is False
+    assert debug["memory_sentinel_debug"]["hard_bypass_reason"] == "searchable_residue"
+    assert "听歌" in debug["memory_sentinel_debug"]["searchable_residue_terms"]
 
 
 def test_gateway_memory_sentinel_checkin_does_not_exact_bypass(
@@ -1175,12 +1224,13 @@ def test_gateway_memory_sentinel_checkin_does_not_exact_bypass(
     )
     injected = _joined_message_content(payload["messages"])
 
-    assert calls and calls[0]["query"] == "老公在做什么呢"
+    assert calls == []
     assert recalled_ids == []
     assert "Recalled Memory" not in injected
     assert "Diffused Memory" not in injected
     assert "Recent Context" not in injected
-    assert debug["memory_sentinel_debug"]["called"] is True
+    assert debug["memory_sentinel_debug"]["called"] is False
+    assert debug["memory_sentinel_debug"]["rule_route"] is True
     assert debug["memory_sentinel_debug"]["hard_bypass_reason"] == ""
     assert debug["memory_sentinel_debug"]["route"] == "tone_only"
     assert debug["query_planner_debug"]["skip_reason"] == "memory_sentinel_tone_only"
@@ -1215,6 +1265,8 @@ def test_gateway_memory_sentinel_skip_blocks_low_signal_recall(monkeypatch, test
 
     assert recalled_ids == []
     assert "Recalled Memory" not in _joined_message_content(payload["messages"])
+    assert debug["memory_sentinel_debug"]["called"] is False
+    assert debug["memory_sentinel_debug"]["rule_route"] is True
     assert debug["memory_sentinel_debug"]["route"] == "skip"
     assert debug["query_planner_debug"]["skip_reason"] == "memory_sentinel_skip"
 
@@ -9493,8 +9545,27 @@ def test_gateway_dynamic_search_keeps_project_query_when_meal_status_present(
     search_query = service._dynamic_recall_search_query(query)
 
     assert search_query != "吃过饭"
-    assert "开源项目" in search_query
+    assert "开源" in search_query
+    assert "项目" in search_query
     assert "听歌" in search_query
+
+
+def test_gateway_dynamic_search_uses_residue_when_entity_noise_present(
+    monkeypatch, test_config, bucket_mgr
+):
+    query = "想和哥哥一起听歌"
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(test_config, query_planner_enabled=False),
+        bucket_mgr,
+    )
+
+    assert service.recall_policy.extract_entity_keywords(query) == ["想和一起听歌"]
+    search_query = service._dynamic_recall_search_query(query)
+
+    assert search_query != "想和一起听歌"
+    assert "听歌" in search_query
+    assert "哥哥" not in search_query
 
 
 def test_gateway_semantic_candidates_timeout(

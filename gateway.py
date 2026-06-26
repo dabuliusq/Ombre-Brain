@@ -251,6 +251,190 @@ Schema:
   "confidence": 0.8
 }
 """
+MEMORY_SENTINEL_RESIDUE_STOP_TERMS = frozenset(
+    {
+        "我",
+        "你",
+        "他",
+        "她",
+        "它",
+        "我们",
+        "你们",
+        "他们",
+        "她们",
+        "在",
+        "做",
+        "在做",
+        "干嘛",
+        "干什么",
+        "做什么",
+        "做啥",
+        "忙什么",
+        "忙啥",
+        "什么",
+        "怎么",
+        "为什么",
+        "是不是",
+        "有没有",
+        "有吗",
+        "一下",
+        "一个",
+        "一位",
+        "很",
+        "好",
+        "厉害",
+        "等儿",
+        "等会",
+        "等会儿",
+        "一会",
+        "一会儿",
+        "把",
+        "给",
+        "让",
+        "叫",
+        "还",
+        "也",
+        "都",
+        "吗",
+        "呢",
+        "啊",
+        "呀",
+        "嘛",
+        "啦",
+        "吧",
+        "欸",
+        "诶",
+        "嗯",
+        "嗯嗯",
+        "哈哈",
+        "哈",
+        "哭",
+        "哭哭",
+        "难过",
+        "开心",
+        "累",
+        "疲惫",
+        "后来",
+        "后来呢",
+        "那件事",
+        "这件事",
+        "那个事",
+        "这个事",
+        "这事",
+        "那事",
+        "接着",
+        "然后呢",
+        "一起",
+        "吃饭",
+        "吃过饭",
+        "吃完饭",
+        "吃了饭",
+        "早饭",
+        "早餐",
+        "午饭",
+        "午餐",
+        "晚饭",
+        "晚餐",
+        "ping",
+        "test",
+        "ok",
+        "hi",
+        "hello",
+    }
+)
+MEMORY_SENTINEL_RESIDUE_STRIP_TERMS = frozenset(
+    {
+        "亲爱的",
+        "老公",
+        "老婆",
+        "宝宝",
+        "宝贝",
+        "哥哥",
+        "小乖",
+        "乖乖",
+        "想你了",
+        "想你",
+        "想我吗",
+        "想我",
+        "抱抱",
+        "抱我",
+        "抱一下",
+        "亲亲",
+        "亲一下",
+        "贴贴",
+        "蹭蹭",
+        "爱你",
+        "爱我吗",
+        "爱我",
+        "mua",
+        "muah",
+        "kiss",
+        "hug",
+        "missyou",
+        "loveyou",
+        "loveu",
+    }
+)
+MEMORY_SENTINEL_RESIDUE_PREFIXES = (
+    "想和",
+    "想跟",
+    "想要",
+    "想把",
+    "想给",
+    "想让",
+    "想",
+)
+MEMORY_SENTINEL_SKIP_ONLY_TERMS = frozenset(
+    {
+        "ping",
+        "test",
+        "测试",
+        "ok",
+        "okay",
+        "hi",
+        "hello",
+        "嗯",
+        "嗯嗯",
+        "嗯嗯嗯",
+        "嗯嗯好",
+        "嗯嗯好的",
+        "好的",
+        "好",
+        "行",
+        "可以",
+        "哦",
+        "噢",
+        "喔",
+        "哈哈",
+        "哈哈哈",
+    }
+)
+MEMORY_SENTINEL_TONE_ONLY_MARKERS = frozenset(
+    {
+        "想你",
+        "想你了",
+        "抱抱",
+        "抱我",
+        "亲亲",
+        "贴贴",
+        "蹭蹭",
+        "爱你",
+        "亲一下",
+        "哭",
+        "哭哭",
+        "难过",
+        "伤心",
+        "委屈",
+        "焦虑",
+        "害怕",
+        "孤独",
+        "寂寞",
+        "累",
+        "疲惫",
+        "困",
+        "崩溃",
+    }
+)
 EXTERNAL_CONTEXT_ATTACHMENT_RE = re.compile(
     r"<attachment\b[^>]*>[\s\S]*?</attachment>",
     re.IGNORECASE,
@@ -9002,7 +9186,11 @@ class GatewayService:
         return self._normalized_recall_query(query)
 
     def _dynamic_recall_search_query(self, query: str, sentinel_debug: dict[str, Any] | None = None) -> str:
-        base = self._entity_priority_recall_search_query(query)
+        residue_terms = self._memory_sentinel_searchable_residue_terms(query)
+        if residue_terms:
+            base = " ".join(residue_terms[:6])
+        else:
+            base = self._entity_priority_recall_search_query(query)
         anchors = []
         if isinstance(sentinel_debug, dict) and sentinel_debug.get("route") == "search":
             anchors = self._normalize_planner_terms(sentinel_debug.get("anchors"))
@@ -9550,6 +9738,8 @@ class GatewayService:
             "model": self.memory_sentinel_model,
             "model_source": "dehydration" if self.memory_sentinel_uses_dehydrator else "gateway",
             "context_turns": [],
+            "rule_route": False,
+            "searchable_residue_terms": [],
             "original_query": self._clip_text(str(query or ""), 500),
         }
 
@@ -9565,6 +9755,7 @@ class GatewayService:
         targeted_detail_skip: bool = False,
     ) -> dict[str, Any]:
         debug = self._memory_sentinel_debug_base(query)
+        debug["searchable_residue_terms"] = self._memory_sentinel_searchable_residue_terms(query)
         hard_bypass = self._memory_sentinel_hard_bypass_reason(
             query,
             all_buckets,
@@ -9577,6 +9768,12 @@ class GatewayService:
             debug["hard_bypass_reason"] = hard_bypass
             return debug
         if not self.memory_sentinel_enabled or not str(query or "").strip():
+            return debug
+
+        rule_plan = self._memory_sentinel_rule_route(query)
+        if rule_plan:
+            debug["rule_route"] = True
+            debug.update(rule_plan)
             return debug
 
         turns = self._memory_sentinel_recent_turns(session_id)
@@ -9626,6 +9823,10 @@ class GatewayService:
             return "explicit_memory_id"
         if self._query_has_explicit_recall_marker(text):
             return "explicit_recall_marker"
+        if not self._query_looks_emotional_reason_lookup(text):
+            residue_terms = self._memory_sentinel_searchable_residue_terms(text)
+            if residue_terms:
+                return "searchable_residue"
         if self._memory_sentinel_should_review_checkin(text):
             return ""
         normalized = self._normalized_recall_query(text)
@@ -9644,6 +9845,144 @@ class GatewayService:
         ):
             return "source_record"
         return ""
+
+    def _memory_sentinel_rule_route(self, query: str) -> dict[str, Any] | None:
+        text = str(query or "").strip()
+        if not text:
+            return {
+                "route": "skip",
+                "reason": "empty query",
+                "anchors": [],
+                "confidence": 1.0,
+            }
+        if self._memory_sentinel_searchable_residue_terms(text):
+            return None
+        if self._memory_sentinel_obvious_skip_query(text):
+            return {
+                "route": "skip",
+                "reason": "ack/test without memory anchor",
+                "anchors": [],
+                "confidence": 0.95,
+            }
+        if self._memory_sentinel_should_review_checkin(text):
+            return {
+                "route": "tone_only",
+                "reason": "presence check-in without memory anchor",
+                "anchors": [],
+                "confidence": 0.95,
+            }
+        if self._memory_sentinel_obvious_tone_only_query(text):
+            return {
+                "route": "tone_only",
+                "reason": "tone contact without searchable anchor",
+                "anchors": [],
+                "confidence": 0.9,
+            }
+        return None
+
+    def _memory_sentinel_searchable_residue_terms(self, query: str) -> list[str]:
+        text = str(query or "").strip()
+        if not text:
+            return []
+        terms = list(self.recall_policy.specific_query_terms(text))
+        normalized = self._normalized_recall_query(text)
+        if normalized:
+            terms.append(normalized)
+        output: list[str] = []
+        seen: set[str] = set()
+        for term in terms:
+            residue = self._memory_sentinel_searchable_residue_term(term)
+            key = self._compact_lookup_key(residue)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            output.append(residue)
+        return output[:6]
+
+    def _memory_sentinel_searchable_residue_term(self, term: object) -> str:
+        cleaned = str(term or "").strip()
+        if not cleaned:
+            return ""
+        compact = self._compact_lookup_key(cleaned)
+        if not compact:
+            return ""
+        if re.fullmatch(r"[a-z0-9_.:-]+", cleaned.lower()):
+            key = cleaned.lower()
+            if self._memory_sentinel_residue_key_allowed(key):
+                return cleaned
+            return ""
+
+        residue = compact
+        strip_terms = set(MEMORY_SENTINEL_RESIDUE_STRIP_TERMS)
+        strip_terms.update(self._identity_match_terms(compact=True))
+        strip_terms.update(
+            self._compact_lookup_key(term)
+            for term in (
+                self.identity.get("ai_name"),
+                self.identity.get("user_name"),
+                self.identity.get("user_display_name"),
+                *(self.identity.get("user_aliases") or []),
+            )
+            if self._compact_lookup_key(term)
+        )
+        for fragment in sorted(strip_terms, key=len, reverse=True):
+            if fragment:
+                residue = residue.replace(fragment, "")
+        changed = True
+        while changed and residue:
+            changed = False
+            for prefix in MEMORY_SENTINEL_RESIDUE_PREFIXES:
+                if residue.startswith(prefix):
+                    residue = residue[len(prefix):]
+                    changed = True
+                    break
+        residue = re.sub(r"[我你他她它的是了啦呢啊呀嘛吗吧欸诶]+", "", residue)
+        if self._memory_sentinel_residue_key_allowed(residue):
+            return residue
+        return ""
+
+    def _memory_sentinel_residue_key_allowed(self, key: str) -> bool:
+        value = str(key or "").strip().lower()
+        if not value:
+            return False
+        if value in MEMORY_SENTINEL_RESIDUE_STOP_TERMS:
+            return False
+        if not self._planner_must_term_allowed(value):
+            return False
+        if re.fullmatch(r"\d+(?:[._:-]\d+)+", value):
+            return True
+        if re.fullmatch(r"[a-z][a-z0-9_.:/-]{2,}", value):
+            return True
+        if re.search(r"\d", value) and re.search(r"[a-z]", value):
+            return True
+        if re.fullmatch(r"[\u4e00-\u9fff]+", value):
+            if len(value) < 2 or len(value) > 16:
+                return False
+            if value in MEMORY_SENTINEL_RESIDUE_STOP_TERMS:
+                return False
+            if all(char in MEMORY_SENTINEL_RESIDUE_STOP_TERMS for char in value):
+                return False
+            return True
+        return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]", value))
+
+    def _memory_sentinel_obvious_skip_query(self, query: str) -> bool:
+        compact = self._compact_lookup_key(query)
+        if not compact:
+            return True
+        if compact in MEMORY_SENTINEL_SKIP_ONLY_TERMS:
+            return True
+        if re.fullmatch(r"(哈|哈哈)+", compact):
+            return True
+        return False
+
+    def _memory_sentinel_obvious_tone_only_query(self, query: str) -> bool:
+        compact = self._compact_lookup_key(query)
+        if not compact:
+            return False
+        has_tone_marker = any(marker in compact for marker in MEMORY_SENTINEL_TONE_ONLY_MARKERS)
+        if not has_tone_marker:
+            return False
+        return self._auto_recall_low_signal_query(query) or self.recall_policy.is_auto_query_too_vague(query)
 
     @staticmethod
     def _query_has_explicit_recall_marker(query: str) -> bool:
