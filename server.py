@@ -10950,6 +10950,11 @@ async def api_config_update(request):
                 )
 
     if body.get("persist_env", False):
+        if "OMBRE_API_KEY" not in env_updates:
+            current_dehydration_key = str(config.get("dehydration", {}).get("api_key") or "").strip()
+            if current_dehydration_key:
+                env_updates["OMBRE_API_KEY"] = current_dehydration_key
+                updated.append("dehydration.api_key_from_runtime")
         try:
             env_updated = _write_dashboard_env_values(env_updates)
             if env_updated:

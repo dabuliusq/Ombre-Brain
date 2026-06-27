@@ -3848,6 +3848,36 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
 
 
 @pytest.mark.asyncio
+async def test_config_update_persist_env_rewrites_runtime_dehydration_key(monkeypatch, test_config, tmp_path):
+    import server
+
+    env_path = tmp_path / ".env"
+    cfg = {
+        **test_config,
+        "dehydration": {
+            **test_config.get("dehydration", {}),
+            "api_key": "runtime-dehy-key",
+        },
+    }
+
+    monkeypatch.setenv("OMBRE_ENV_PATH", str(env_path))
+    monkeypatch.delenv("OMBRE_API_KEY", raising=False)
+    monkeypatch.setattr(server, "config", cfg)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+
+    response = await server.api_config_update(DummyRequest({"persist_env": True}))
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert "dehydration.api_key_from_runtime" in payload["updated"]
+    assert "env.OMBRE_API_KEY" in payload["updated"]
+    assert "persisted_to_env" in payload["updated"]
+    assert env_path.read_text(encoding="utf-8").strip() == "OMBRE_API_KEY=runtime-dehy-key"
+    assert os.environ["OMBRE_API_KEY"] == "runtime-dehy-key"
+
+
+@pytest.mark.asyncio
 async def test_dashboard_config_updates_gateway_upstreams_without_persisting_key_values(monkeypatch, tmp_path):
     import server
 
