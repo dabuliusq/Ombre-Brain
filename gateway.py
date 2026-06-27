@@ -564,6 +564,10 @@ class GatewayService:
             self.gateway_cfg.get("memory_sentinel_enabled"),
             True,
         )
+        self.memory_sentinel_llm_enabled = self._bool_config_value(
+            self.gateway_cfg.get("memory_sentinel_llm_enabled"),
+            True,
+        )
         (
             self.memory_sentinel_model,
             self.memory_sentinel_uses_dehydrator,
@@ -807,6 +811,7 @@ class GatewayService:
                 "just_now_context_max_turns": self.just_now_context_max_turns,
                 "just_now_context_budget": self.just_now_context_budget,
                 "memory_sentinel_enabled": self.memory_sentinel_enabled,
+                "memory_sentinel_llm_enabled": self.memory_sentinel_llm_enabled,
                 "memory_sentinel_model": self.memory_sentinel_model,
                 "memory_sentinel_context_turns": self.memory_sentinel_context_turns,
                 "date_persona_trace_enabled": self.date_persona_trace_enabled,
@@ -871,6 +876,7 @@ class GatewayService:
             "just_now_context_budget": self.just_now_context_budget,
             "conversation_turns_max_entries": self.conversation_turns_max_entries,
             "memory_sentinel_enabled": self.memory_sentinel_enabled,
+            "memory_sentinel_llm_enabled": self.memory_sentinel_llm_enabled,
             "memory_sentinel_model": self.memory_sentinel_model,
             "memory_sentinel_context_turns": self.memory_sentinel_context_turns,
             "date_persona_trace_enabled": self.date_persona_trace_enabled,
@@ -1199,6 +1205,13 @@ class GatewayService:
             )
             self.gateway_cfg["memory_sentinel_enabled"] = self.memory_sentinel_enabled
             updated.append("gateway.memory_sentinel_enabled")
+        if "memory_sentinel_llm_enabled" in payload:
+            self.memory_sentinel_llm_enabled = self._bool_config_value(
+                payload["memory_sentinel_llm_enabled"],
+                True,
+            )
+            self.gateway_cfg["memory_sentinel_llm_enabled"] = self.memory_sentinel_llm_enabled
+            updated.append("gateway.memory_sentinel_llm_enabled")
         if "memory_sentinel_model" in payload:
             configured_model = str(payload["memory_sentinel_model"] or "").strip()
             (
@@ -9727,6 +9740,7 @@ class GatewayService:
     def _memory_sentinel_debug_base(self, query: str) -> dict[str, Any]:
         return {
             "enabled": bool(self.memory_sentinel_enabled),
+            "llm_enabled": bool(self.memory_sentinel_llm_enabled),
             "called": False,
             "route": "",
             "reason": "",
@@ -9739,6 +9753,7 @@ class GatewayService:
             "model_source": "dehydration" if self.memory_sentinel_uses_dehydrator else "gateway",
             "context_turns": [],
             "rule_route": False,
+            "llm_skipped_reason": "",
             "searchable_residue_terms": [],
             "original_query": self._clip_text(str(query or ""), 500),
         }
@@ -9774,6 +9789,9 @@ class GatewayService:
         if rule_plan:
             debug["rule_route"] = True
             debug.update(rule_plan)
+            return debug
+        if not self.memory_sentinel_llm_enabled:
+            debug["llm_skipped_reason"] = "memory_sentinel_llm_disabled"
             return debug
 
         turns = self._memory_sentinel_recent_turns(session_id)
