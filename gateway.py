@@ -620,7 +620,7 @@ class GatewayService:
         )
         self.memory_sentinel_llm_enabled = self._bool_config_value(
             self.gateway_cfg.get("memory_sentinel_llm_enabled"),
-            True,
+            False,
         )
         (
             self.memory_sentinel_model,

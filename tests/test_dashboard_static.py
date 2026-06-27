@@ -335,6 +335,7 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert 'id="cfg-retrieval-mode"' in html
     assert 'id="cfg-word-map-hint-enabled"' in html
     assert 'id="cfg-query-planner-enabled"' in html
+    assert 'id="cfg-memory-sentinel-llm-enabled"' in html
     assert 'id="cfg-query-planner-model"' not in html
     assert 'id="cfg-memory-detail-recall-enabled"' in html
     assert 'id="cfg-memory-detail-recall-max-ids"' in html
@@ -356,6 +357,7 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert "cfg.gateway.retrieval_mode" in html
     assert "cfg.gateway.word_map_hint_enabled" in html
     assert "cfg.gateway.query_planner_enabled" in html
+    assert "cfg.gateway.memory_sentinel_llm_enabled" in html
     assert "cfg.gateway.query_planner_model" not in html
     assert "cfg.gateway.memory_detail_recall_enabled" in html
     assert "cfg.gateway.memory_detail_recall_max_ids" in html
@@ -374,6 +376,7 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert "retrieval_mode: document.getElementById('cfg-retrieval-mode').value," in html
     assert "word_map_hint_enabled: document.getElementById('cfg-word-map-hint-enabled').value === 'true'," in html
     assert "query_planner_enabled: document.getElementById('cfg-query-planner-enabled').value === 'true'," in html
+    assert "memory_sentinel_llm_enabled: document.getElementById('cfg-memory-sentinel-llm-enabled').value === 'true'," in html
     assert "query_planner_model: document.getElementById('cfg-query-planner-model').value," not in html
     assert "memory_detail_recall_enabled: document.getElementById('cfg-memory-detail-recall-enabled').value === 'true'," in html
     assert "memory_detail_recall_max_ids: numberValue('cfg-memory-detail-recall-max-ids', 3)," in html

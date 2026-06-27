@@ -2440,6 +2440,14 @@
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">关闭后不再额外调用脱水模型拆检索词；刚刚、日期和可靠直命中不受影响</div>
       <div class="config-row">
+        <label>LLM哨兵</label>
+        <select id="cfg-memory-sentinel-llm-enabled">
+          <option value="false">关闭</option>
+          <option value="true">开启</option>
+        </select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认关闭；规则哨兵仍会挡轻闲聊，开启后灰区才额外调用小模型判 search / tone_only / skip</div>
+      <div class="config-row">
         <label>旧记忆随机</label>
         <select id="cfg-query-resurface-enabled">
           <option value="false">关闭</option>
@@ -6452,6 +6460,8 @@ async function loadConfig() {
       (cfg.gateway && cfg.gateway.word_map_hint_enabled) ? 'true' : 'false';
     document.getElementById('cfg-query-planner-enabled').value =
       (cfg.gateway && cfg.gateway.query_planner_enabled) ? 'true' : 'false';
+    document.getElementById('cfg-memory-sentinel-llm-enabled').value =
+      (cfg.gateway && cfg.gateway.memory_sentinel_llm_enabled) ? 'true' : 'false';
     document.getElementById('cfg-query-resurface-enabled').value =
       (cfg.recall && cfg.recall.query_resurface_enabled) ? 'true' : 'false';
     var diffusion = cfg.memory_diffusion || {};
@@ -6658,6 +6668,7 @@ async function saveConfig(persist, persistEnv) {
       retrieval_mode: document.getElementById('cfg-retrieval-mode').value,
       word_map_hint_enabled: document.getElementById('cfg-word-map-hint-enabled').value === 'true',
       query_planner_enabled: document.getElementById('cfg-query-planner-enabled').value === 'true',
+      memory_sentinel_llm_enabled: document.getElementById('cfg-memory-sentinel-llm-enabled').value === 'true',
     };
     candidate.recall = {
       query_resurface_enabled: document.getElementById('cfg-query-resurface-enabled').value === 'true',

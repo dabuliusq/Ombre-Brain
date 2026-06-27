@@ -1051,6 +1051,17 @@ def test_gateway_query_planner_defaults_to_dehydration_model(monkeypatch, test_c
     assert captured == []
 
 
+def test_gateway_memory_sentinel_llm_defaults_off(monkeypatch, test_config, bucket_mgr):
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(test_config),
+        bucket_mgr,
+    )
+
+    assert service.memory_sentinel_enabled is True
+    assert service.memory_sentinel_llm_enabled is False
+
+
 def test_gateway_memory_sentinel_hard_signal_bypasses_model(monkeypatch, test_config, bucket_mgr):
     temple_id = _create_bucket(
         bucket_mgr,
@@ -1289,6 +1300,7 @@ def test_gateway_memory_sentinel_search_uses_recent_turns_for_vague_followup(
         monkeypatch,
         _gateway_config(
             test_config,
+            memory_sentinel_llm_enabled=True,
             recent_context_budget=0,
             current_inner_state_interval_rounds=0,
             first_card_min_score=0.35,
@@ -1444,6 +1456,7 @@ def test_gateway_memory_sentinel_failure_falls_back_to_existing_rules(
         monkeypatch,
         _gateway_config(
             test_config,
+            memory_sentinel_llm_enabled=True,
             recent_context_budget=0,
             current_inner_state_interval_rounds=0,
             first_card_min_score=0.35,
