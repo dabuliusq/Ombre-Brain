@@ -1,0 +1,28 @@
+identity:
+  ai_name: "Claude"
+  user_name: "77"
+  user_display_name: "77"
+  user_aliases: []
+
+persona:
+  profile_id: "claude_77_main"
+  model: "Qwen/Qwen3-8B"
+  base_url: "https://api.siliconflow.cn/v1"
+
+embedding:
+  enabled: true
+  model: "Qwen/Qwen3-Embedding-0.6B"
+  base_url: "https://api.siliconflow.cn/v1"
+
+reranker:
+  enabled: false
+
+reflection:
+  timezone: "Asia/Shanghai"
+  daily_min_memory_items: 5
+  daily_conversation_turn_limit: 0
+  
+dream:
+  enabled: false
+
+state_dir: "/app/state"
